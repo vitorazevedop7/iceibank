@@ -7,7 +7,13 @@ validacao de schema e o controller correspondente.
 from fastapi import APIRouter, Request
 
 from src.controllers import contas_controller
-from src.models import CriarContaRequest, ValorRequest
+from src.controllers import transferencias_controller as transferencias
+from src.models import (
+    CreditoRemotoRequest,
+    CriarContaRequest,
+    TransferenciaRequest,
+    ValorRequest,
+)
 
 router = APIRouter()
 
@@ -37,6 +43,22 @@ async def rota_depositar(id_conta: int, dados: ValorRequest, request: Request):
 @router.post("/contas/{id_conta}/sacar", tags=["contas"])
 async def rota_sacar(id_conta: int, dados: ValorRequest, request: Request):
     return await contas_controller.sacar(id_conta, dados, _estado(request))
+
+
+# --- Parte D: transferencias -------------------------------------------------
+
+
+@router.post("/transferencias", tags=["transferencias"])
+async def rota_transferir(dados: TransferenciaRequest, request: Request):
+    return await transferencias.transferir(dados, _estado(request))
+
+
+@router.post("/contas/{id_conta}/creditar-remoto", tags=["transferencias"])
+async def rota_creditar_remoto(
+    id_conta: int, dados: CreditoRemotoRequest, request: Request
+):
+    """Rota interna, chamada por outra agencia."""
+    return await transferencias.creditar_remoto(id_conta, dados, _estado(request))
 
 
 # --- Rota utilitaria ---------------------------------------------------------
