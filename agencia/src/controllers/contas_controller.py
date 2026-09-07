@@ -7,6 +7,7 @@ Toda operacao que altera ou cria estado gera um evento local no relogio de Lampo
 from fastapi import HTTPException, status
 
 from src import config
+from src.auth import exigir_dono_da_conta
 from src.models import Conta, CriarContaRequest, ValorRequest
 
 
@@ -20,7 +21,8 @@ def _conta_ou_404(estado, id_conta: int) -> Conta:
     return conta
 
 
-async def criar_conta(dados: CriarContaRequest, estado) -> dict:
+async def criar_conta(dados: CriarContaRequest, estado, usuario: dict) -> dict:
+    exigir_dono_da_conta(usuario, dados.id)
 
     # Particionamento: a agencia recusa operar contas que nao sao suas.
     if config.agencia_responsavel(dados.id) != estado.id_agencia:
@@ -51,11 +53,13 @@ async def criar_conta(dados: CriarContaRequest, estado) -> dict:
     return estado.contas[dados.id].para_dict()
 
 
-async def consultar_saldo(id_conta: int, estado) -> dict:
+async def consultar_saldo(id_conta: int, estado, usuario: dict) -> dict:
+    exigir_dono_da_conta(usuario, id_conta)
     return _conta_ou_404(estado, id_conta).para_dict()
 
 
-async def depositar(id_conta: int, dados: ValorRequest, estado) -> dict:
+async def depositar(id_conta: int, dados: ValorRequest, estado, usuario: dict) -> dict:
+    exigir_dono_da_conta(usuario, id_conta)
     conta = _conta_ou_404(estado, id_conta)
 
     ts = await estado.relogio.evento_local()
@@ -66,7 +70,8 @@ async def depositar(id_conta: int, dados: ValorRequest, estado) -> dict:
     return conta.para_dict()
 
 
-async def sacar(id_conta: int, dados: ValorRequest, estado) -> dict:
+async def sacar(id_conta: int, dados: ValorRequest, estado, usuario: dict) -> dict:
+    exigir_dono_da_conta(usuario, id_conta)
     conta = _conta_ou_404(estado, id_conta)
 
     if conta.saldo < dados.valor:

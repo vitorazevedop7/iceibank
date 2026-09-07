@@ -5,6 +5,8 @@ from src.models.schemas import (
     ContaResponse,
     CreditoRemotoRequest,
     CriarContaRequest,
+    LoginRequest,
+    TokenResponse,
     TransferenciaRequest,
     ValorRequest,
 )
@@ -14,6 +16,8 @@ __all__ = [
     "ContaResponse",
     "CreditoRemotoRequest",
     "CriarContaRequest",
+    "LoginRequest",
+    "TokenResponse",
     "TransferenciaRequest",
     "ValorRequest",
 ]

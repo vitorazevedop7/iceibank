@@ -4,12 +4,14 @@ import httpx
 from fastapi import HTTPException, status
 
 from src import config
+from src.auth import criar_token_servico, exigir_dono_da_conta
 from src.models import CreditoRemotoRequest, TransferenciaRequest
 
 _TEMPO_LIMITE = httpx.Timeout(5.0)
 
 
-async def transferir(dados: TransferenciaRequest, estado) -> dict:
+async def transferir(dados: TransferenciaRequest, estado, usuario: dict) -> dict:
+    exigir_dono_da_conta(usuario, dados.idOrigem)
     return await _executar_transferencia(dados, estado)
 
 
@@ -96,6 +98,10 @@ async def _executar_transferencia(dados: TransferenciaRequest, estado) -> dict:
                     "timestampLamport": ts_envio,
                     "origemAgencia": estado.id_agencia,
                 },
+                headers={
+                    # Token de servico: quem chama e outra agencia, nao uma pessoa.
+                    "Authorization": f"Bearer {criar_token_servico(estado.id_agencia)}"
+                },
             )
             resposta.raise_for_status()
     except Exception as erro:
@@ -136,7 +142,7 @@ async def _executar_transferencia(dados: TransferenciaRequest, estado) -> dict:
 
 
 async def creditar_remoto(
-    id_conta: int, dados: CreditoRemotoRequest, estado
+    id_conta: int, dados: CreditoRemotoRequest, estado, servico: dict
 ) -> dict:
     """Recebe o credito enviado por outra agencia.
 
@@ -161,6 +167,7 @@ async def creditar_remoto(
             "valor": dados.valor,
             "origemAgencia": dados.origemAgencia,
             "timestampRecebido": dados.timestampLamport,
+            "chamadaPor": servico.get("sub"),
         },
     )
     return {

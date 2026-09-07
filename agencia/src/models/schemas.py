@@ -25,6 +25,17 @@ class CreditoRemotoRequest(BaseModel):
     origemAgencia: int = Field(ge=0)
 
 
+class LoginRequest(BaseModel):
+    usuario: str
+    senha: str
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    expira_em_segundos: int
+
+
 class ContaResponse(BaseModel):
     id: int
     nomeAluno: str
