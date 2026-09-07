@@ -9,89 +9,368 @@ Backend em Python + FastAPI | Frontend em Vite + React + TypeScript
 
 ### 1. Por que o relogio de Lamport usa `max(contador_local, timestampRecebido) + 1` ao receber uma mensagem, em vez de simplesmente adotar o timestamp recebido diretamente?
 
-_(a responder)_
+Porque adotar o timestamp recebido diretamente permitiria que o relogio **retrocedesse**, e um
+relogio que anda para tras quebra a propriedade que justifica o algoritmo inteiro.
 
-### 2. Se a Agencia 0 esta no evento de contador 10 e recebe uma mensagem com timestamp 3 (de uma agencia mais "atrasada"), qual o novo valor do contador da Agencia 0? O que isso implica sobre agencias que processam muitos eventos rapidamente versus agencias mais lentas?
+Suponha que a Agencia 1 ja processou 20 eventos proprios (contador 20) e recebe uma mensagem
+carimbada com 5. Se ela simplesmente adotasse 5, o proximo evento local dela receberia timestamp 6 -
+menor que o timestamp 20 de um evento que ja tinha acontecido antes dele *na propria agencia*.
+A relacao "aconteceu-antes" dentro de um mesmo processo, que e a mais obvia de todas, ficaria
+invertida na linha do tempo.
 
-_(a responder)_
+O `max` garante que o relogio nunca anda para tras: ele fica no maior valor entre o que a agencia ja
+sabia e o que o remetente informou. E o `+ 1` garante a desigualdade **estrita**: o evento de
+recebimento precisa ser estritamente maior que o envio, senao os dois ficariam empatados e a
+ordem causal entre eles - que existe de verdade, porque nao se recebe algo antes de ser enviado -
+se perderia.
+
+Na pratica, isso apareceu no nosso log. A Agencia 0 enviou um credito remoto com `ao_enviar()` = 8;
+a Agencia 1, que estava no contador 1, aplicou `max(1, 8) + 1 = 9`:
+
+```
+[Lamport 8] agencia-0 - TRANSFERENCIA_DEBITO {"idOrigem": 0, "idDestino": 1, "agenciaDestino": 1}
+[Lamport 9] agencia-1 - TRANSFERENCIA_CREDITO_REMOTO {"timestampRecebido": 8, "chamadaPor": "agencia-0"}
+```
+
+O credito ficou com timestamp maior que o envio, que e exatamente o que se espera de dois eventos
+causalmente ligados.
+
+### 2. Se a Agencia 0 esta no evento de contador 10 e recebe uma mensagem com timestamp 3, qual o novo valor do contador? O que isso implica sobre agencias rapidas versus lentas?
+
+O novo valor e **11**: `max(10, 3) + 1 = 11`. A mensagem "atrasada" nao puxa o relogio para tras;
+ela so consome um tique, como qualquer outro evento.
+
+A implicacao e que **os contadores das agencias nao sao comparaveis como medida de tempo ou de
+volume de trabalho**. Uma agencia que processa muitos eventos sobe o contador rapidamente por conta
+propria; uma agencia ociosa fica com contador baixo. Quando a lenta recebe uma mensagem da rapida,
+ela da um salto e se alinha (`max`); quando acontece o contrario, a rapida praticamente ignora o
+valor recebido.
+
+Ou seja, o relogio logico so sincroniza na direcao "para cima", e apenas quando ha troca de
+mensagem. Duas agencias que nunca conversam podem ficar arbitrariamente distantes em contador sem
+que isso signifique nada sobre a ordem real dos seus eventos. Foi o que aconteceu nos nossos testes:
+a Agencia 0 chegou ao contador 21 enquanto a Agencia 2 estava em 8, simplesmente porque recebeu mais
+operacoes - nao porque seus eventos sejam "mais recentes".
 
 ---
 
 ## Parte D - Transferencias (secao 8.3)
 
-### 1. No trecho `agenciaDestino === idAgencia`, por que a transferencia local nao precisa da logica de `aoEnviar()` / `aoReceber()` do relogio de Lamport, enquanto a transferencia entre agencias precisa?
+### 1. Por que a transferencia local nao precisa de `ao_enviar()` / `ao_receber()`, enquanto a transferencia entre agencias precisa?
 
-_(a responder)_
+Porque as regras 2 e 3 de Lamport existem para sincronizar **processos diferentes**, e na
+transferencia local nao ha dois processos: o debito e o credito acontecem na memoria da mesma
+agencia, no mesmo processo, sem nenhuma mensagem trocada.
 
-### 2. Reproduza a falha conhecida e observe o saldo da conta de origem depois do erro. Ele foi revertido? O que isso significa em termos de consistencia do sistema bancario?
+O relogio logico serve para estabelecer ordem causal entre eventos que, de outra forma, nao teriam
+como ser comparados - eventos em maquinas distintas, sem relogio fisico comum. Dentro de um unico
+processo esse problema nao existe: os eventos ja sao naturalmente sequenciais, e dois
+`evento_local()` consecutivos (regra 1) bastam para registrar que o debito veio antes do credito.
 
-_(a responder)_
+Na transferencia entre agencias, sim: a Agencia de origem faz `ao_enviar()` e anexa o valor no corpo
+da requisicao; a Agencia de destino faz `ao_receber(timestamp)` e ajusta seu proprio contador. Sem
+isso, os relogios das duas agencias evoluiriam de forma completamente independente e a linha do
+tempo unificada nao teria como colocar o credito depois do debito.
 
-### 3. Pensando a frente para o Sprint 4: cite, em alto nivel, duas formas possiveis de corrigir esse problema.
+### 2. Reproduza a falha conhecida e observe o saldo da conta de origem depois do erro. Ele foi revertido?
 
-_(a responder)_
+**Nao foi revertido.** Com a Agencia 1 derrubada, a conta 0 tinha saldo 50,00. Apos a tentativa de
+transferir 25,00 para a conta 1, a API respondeu HTTP 502 e o saldo da conta 0 ficou em **25,00** -
+o dinheiro saiu da origem e nunca chegou ao destino. A Agencia 0 registrou a inconsistencia:
+
+```json
+{"agencia": "agencia-0", "tipo": "TRANSFERENCIA_FALHOU", "timestampLamport": 15,
+ "detalhes": {"idOrigem": 0, "idDestino": 1, "valor": 25.0, "agenciaDestino": 1,
+ "erro": "ConnectError: All connection attempts failed",
+ "inconsistencia": "debito aplicado sem credito correspondente"}}
+```
+
+Em termos de consistencia, o sistema violou a **atomicidade**: a transferencia e conceitualmente uma
+operacao unica ("debita aqui E credita la"), mas foi executada como duas operacoes independentes, e
+a segunda falhou depois que a primeira ja tinha efeito. O sistema ficou em um estado que nenhuma
+sequencia valida de operacoes bancarias poderia produzir - a soma dos saldos das 3 agencias diminuiu
+sem que ninguem sacasse.
+
+Vale notar o que o sistema **acertou**: ele nao escondeu o problema. Devolveu 502 em vez de fingir
+sucesso, informou o valor em transito na resposta, e deixou o rastro no log. Um operador humano
+consegue detectar e corrigir manualmente. O que falta e a correcao ser automatica.
+
+### 3. Duas formas possiveis de corrigir isso no Sprint 4
+
+**Two-Phase Commit (2PC).** Um coordenador conduz a operacao em duas fases. Na fase de preparacao,
+ele pergunta as duas agencias se elas conseguem executar sua parte e as duas reservam os recursos
+(a origem bloqueia o valor sem debitar de fato) e respondem "pronto". So se todas responderem
+positivamente o coordenador emite o commit na fase 2. Se qualquer uma falhar ou nao responder, ele
+emite abort e ninguem aplica nada. A vantagem e a atomicidade forte; o custo e que os recursos ficam
+bloqueados durante o protocolo e a queda do coordenador entre as fases trava os participantes.
+
+**Saga com transacao compensatoria.** Cada etapa e aplicada e confirmada localmente na hora, mas
+toda etapa tem uma etapa inversa registrada. Se o credito no destino falhar, a Saga dispara
+automaticamente a compensacao "estornar debito na origem", que devolve o valor. Nao ha bloqueio e o
+sistema escala melhor, mas a consistencia e eventual: existe uma janela real em que o dinheiro esta
+faltando, e a compensacao precisa ser idempotente e sobreviver a reinicializacoes - o que se
+encaixa bem com a chave de idempotencia ja implementada neste sprint.
 
 ---
 
 ## Parte E - Linha do tempo unificada (secao 10.3)
 
-### Observacao do passo 3 da tarefa (par de eventos com o mesmo timestamp de Lamport)
+### Observacao do passo 3 da tarefa
 
-_(a responder: os eventos empatados eram causalmente relacionados ou concorrentes? A ordem por `horaParede` bate com a ordem por Lamport?)_
+Rodando `mesclar_logs.py` apos gerar operacoes simultaneas nas 3 agencias, apareceram varios
+empates. Dois casos ilustram bem a diferenca:
 
-### 1. O relogio de Lamport garante que, se A aconteceu antes de B causalmente, entao `timestamp(A) < timestamp(B)`. Ele nao garante a volta. O que isso significa na pratica quando voce ve dois eventos com timestamps diferentes na linha do tempo, mas sem saber se um realmente influenciou o outro?
+**Caso A - eventos genuinamente concorrentes.** No Lamport 4:
 
-_(a responder)_
+```
+[Lamport 4] (21:03:55.096) agencia-0 - SAQUE     {"id": 0, "valor": 15.0}
+[Lamport 4] (21:07:33.537) agencia-2 - DEPOSITO  {"id": 2, "valor": 5.0}
+[Lamport 4] (21:07:33.552) agencia-1 - DEPOSITO  {"id": 1, "valor": 5.0}
+```
 
-### 2. Baseado no que voce observou: o relogio de Lamport, sozinho, seria suficiente para um sistema que precisa distinguir com certeza "A e B sao concorrentes" de "A aconteceu antes de B"? Por que isso motiva o relogio vetorial do Sprint 2?
+Sao tres eventos **concorrentes**: nenhum influenciou o outro. Cada agencia chegou ao contador 4
+contando os proprios eventos, sem nunca ter trocado mensagem com as outras ate ali. O empate nao
+significa simultaneidade - significa ausencia de relacao causal. E a hora de parede confirma que
+nao houve simultaneidade nenhuma: o saque da Agencia 0 aconteceu quase 4 minutos antes dos outros
+dois.
 
-_(a responder)_
+**Caso B - empate entre eventos de historias diferentes.** No Lamport 9:
+
+```
+[Lamport 9] (21:04:14.075) agencia-1 - TRANSFERENCIA_CREDITO_REMOTO {"timestampRecebido": 8}
+[Lamport 9] (21:04:14.098) agencia-0 - TRANSFERENCIA_DEBITO {"idOrigem": 0, "idDestino": 1}
+```
+
+Aqui o credito remoto da Agencia 1 tem relacao causal com o *envio* da Agencia 0 (timestamp 8), mas
+**nao** com o debito da Agencia 0 que empatou com ele - esse debito e de uma transferencia
+posterior, disparada depois. Os dois eventos de Lamport 9 sao concorrentes entre si, apesar de um
+deles pertencer a uma cadeia causal que passa pela outra agencia.
+
+**A ordem por hora de parede bate com a ordem por Lamport?** Nao, e nem deveria. Nos empates do
+Lamport 4, 5 e 6, a ordem por hora fisica coloca a Agencia 0 primeiro (21:03/21:04) e as demais
+minutos depois (21:07), enquanto o Lamport nao os ordena de forma alguma. E no Lamport 1 ha eventos
+separados por quase 4 minutos de relogio fisico. Isso reforca o ponto do algoritmo: o relogio logico
+nao esta medindo tempo, esta medindo **dependencia causal**. A hora de parede so foi guardada para
+essa comparacao - nenhuma decisao do sistema depende dela.
+
+### 1. Lamport garante ida mas nao a volta. O que isso significa ao ver dois eventos com timestamps diferentes?
+
+Significa que `ts(A) < ts(B)` **nao prova** que A influenciou B. A garantia so vale em uma direcao:
+se A aconteceu-antes de B causalmente, entao com certeza `ts(A) < ts(B)`. Lendo a linha do tempo de
+tras para frente, a inferencia nao se sustenta.
+
+Concretamente: ver `TRANSFERENCIA_DEBITO` no Lamport 7 e `DEPOSITO` no Lamport 16 nao autoriza dizer
+que o debito influenciou o deposito. Pode ser que sim, pode ser que sejam completamente
+independentes e a diferenca venha so de quantos eventos locais cada agencia processou pelo caminho.
+O que a ordem por Lamport permite afirmar com seguranca e o **contrapositivo**: se `ts(A) >= ts(B)`,
+entao A definitivamente *nao* causou B.
+
+Na pratica, a linha do tempo unificada e uma ordem total valida (nunca contradiz a causalidade), mas
+que inventa ordem onde nao havia nenhuma.
+
+### 2. Lamport sozinho distingue "concorrentes" de "A antes de B"? Por que isso motiva o relogio vetorial?
+
+Nao distingue. Olhando so os inteiros do log, e impossivel dizer se os dois eventos do Lamport 9
+sao concorrentes ou se um causou o outro - a informacao simplesmente nao esta la. Um unico contador
+colapsa toda a historia do sistema em um numero, e nesse achatamento a informacao de *quais*
+processos contribuiram para aquele estado se perde.
+
+O relogio vetorial resolve isso guardando um contador **por processo**: cada agencia carrega
+`[c0, c1, c2]`, o que ela sabe do progresso de cada uma das tres. A comparacao passa a ser
+componente a componente: A aconteceu-antes de B se todo componente de A e menor ou igual ao de B e
+pelo menos um e estritamente menor; se nenhum dos dois domina o outro, eles sao **provadamente
+concorrentes**. Isso da a volta que falta no relogio de Lamport, e e por isso que ele e o tema do
+Sprint 2 - onde a comunicacao passa a ser indireta (pub/sub) e saber quem viu o que fica ainda mais
+critico.
 
 ---
 
 ## Parte F - Autenticacao JWT (secao 11.3)
 
-### 1. Qual a diferenca entre autenticacao e autorizacao? Sua implementacao verifica so uma das duas, ou as duas? Um usuario autenticado consegue sacar de uma conta que nao e dele?
+### 1. Autenticacao vs autorizacao. Sua implementacao verifica so uma, ou as duas?
 
-_(a responder)_
+**Autenticacao** responde "quem e voce" - validar credenciais e confirmar identidade.
+**Autorizacao** responde "voce pode fazer isso" - decidir se a identidade ja confirmada tem
+permissao para a operacao pedida.
 
-### 2. Por que o servidor nao precisa consultar um banco de dados para validar a assinatura de um JWT a cada requisicao? O que isso implica sobre escalabilidade, comparado a guardar sessoes em memoria no servidor?
+Esta implementacao faz **as duas**, e foi por isso que escolhi o modelo de credencial "usuario dono
+de contas" em vez de um operador generico:
 
-_(a responder)_
+- **Autenticacao:** `POST /auth/login` valida usuario e senha e emite um JWT assinado. A dependencia
+  `usuario_autenticado` rejeita com 401 qualquer requisicao sem token, com token invalido ou expirado.
+- **Autorizacao:** o token carrega a claim `contas` com os ids que aquele usuario possui, e a funcao
+  `exigir_dono_da_conta` compara essa lista com a conta que a requisicao quer operar. Se nao bater,
+  responde **403 Forbidden** - status diferente do 401 de proposito, porque o problema nao e a
+  identidade, e a permissao.
 
-### 3. O que aconteceria com a seguranca do sistema se a chave secreta usada para assinar o JWT vazasse?
+**Um usuario autenticado consegue sacar de uma conta que nao e dele?** Nao. Testado:
 
-_(a responder)_
+```
+$ curl -s http://localhost:4001/contas/1 -H "Authorization: Bearer $TOKEN_ANA"
+{"detail":{"erro":"Usuario 'ana' nao e dono da conta 1."}}   [HTTP 403]
+```
+
+A verificacao cobre consulta, deposito, saque, criacao de conta e a origem da transferencia. A
+**conta de destino** de uma transferencia deliberadamente nao exige propriedade - transferir para
+terceiros e justamente o caso de uso normal de um banco.
+
+### 2. Por que o servidor nao precisa consultar um banco para validar a assinatura? O que isso implica sobre escalabilidade?
+
+Porque o JWT e **auto-contido e assinado**. O token carrega os proprios dados (usuario, contas,
+expiracao) e um HMAC-SHA256 calculado sobre eles com a chave secreta. Para validar, a agencia
+recalcula o HMAC com a mesma chave e compara: se bater, o conteudo nao foi adulterado e veio de quem
+tem a chave. A verificacao e puramente local e criptografica - nao ha nada para consultar.
+
+Sessao em memoria no servidor funciona de forma oposta: o cliente manda um id opaco e o servidor
+precisa procurar o que aquele id significa. Isso cria **estado compartilhado**, e estado compartilhado
+e o inimigo da escalabilidade horizontal. Com sessoes, ou todas as instancias consultam um repositorio
+central (que vira gargalo e ponto unico de falha), ou o balanceador precisa amarrar cada usuario
+sempre a mesma instancia (sticky sessions, que atrapalha failover e rebalanceamento).
+
+No ICEIBank isso e visivel: as 3 agencias compartilham a chave secreta, entao **um token emitido
+pela Agencia 0 e aceito pelas Agencias 1 e 2** sem que elas troquem uma unica mensagem entre si -
+o que e essencial, porque o frontend pode usar qualquer agencia como porta de entrada.
+
+O preco e a revogacao. Como nao ha consulta, nao ha onde marcar "este token nao vale mais": um token
+roubado continua valido ate expirar. E por isso que a expiracao e curta (15 minutos).
+
+### 3. O que aconteceria se a chave secreta vazasse?
+
+Seria comprometimento total da autenticacao. Com HS256 a mesma chave assina e verifica, entao quem
+tem a chave **forja qualquer token**: bastaria montar um payload com `"sub": "ana"` e
+`"contas": [0,1,2,3,4,5]`, assinar, e operar todas as contas do banco. As 3 agencias aceitariam,
+porque a assinatura seria matematicamente valida - do ponto de vista delas, nada distingue um token
+forjado de um legitimo.
+
+E pior neste sistema por dois motivos. Primeiro, a chave e compartilhada pelas 3 agencias: vazar em
+uma compromete as tres. Segundo, o atacante tambem forjaria **tokens de servico** (`tipo: servico`),
+chamando `creditar-remoto` diretamente e creditando qualquer conta com qualquer valor, se passando
+por outra agencia.
+
+Como a validacao nao consulta estado, nao ha lista de revogacao para conter o estrago: a unica
+resposta e trocar a chave, o que invalida de uma vez todos os tokens em circulacao e forca todo
+mundo a logar de novo. Por isso a chave e lida de variavel de ambiente (`JWT_SEGREDO`) e nao fica
+fixa no codigo - em producao ela viria de um cofre de segredos, com rotacao periodica. Uma alternativa
+estrutural seria assinatura assimetrica (RS256): as agencias so precisariam da chave publica para
+verificar, e a chave privada de assinatura ficaria em um unico servico de autenticacao, reduzindo
+bastante a superficie de exposicao.
 
 ---
 
 ## Parte G - Frontend (secao 12.3)
 
-### 1. Como o frontend "lembra" de reenviar o token em cada requisicao depois do login? Descreva, em alto nivel, o mecanismo implementado.
+### 1. Como o frontend "lembra" de reenviar o token em cada requisicao?
 
-_(a responder)_
+O token e guardado no `localStorage` logo apos o login e reanexado automaticamente por um ponto
+unico de saida de rede.
 
-### 2. Se o token expirar enquanto alguem esta usando o frontend no meio de uma operacao, o que acontece? A interface avisa a pessoa usuaria, ou ela so ve um erro generico?
+O mecanismo tem duas pecas, ambas na camada Model:
 
-_(a responder)_
+1. **`model/sessao.ts`** e o unico modulo do app que toca no `localStorage` (leitura e escrita
+   envolvidas em `try/catch`, porque navegador em modo privado pode bloquear o acesso).
+2. **`model/api.ts`** expoe uma funcao interna `requisicao()` pela qual **toda** chamada a API passa.
+   Antes de disparar o `fetch`, ela le o token da sessao e injeta o cabecalho
+   `Authorization: Bearer <token>`.
 
-### 3. Esta unidade da disciplina trata de arquitetura MVC. No seu frontend, onde fica o "M" (Model), o "V" (View) e o "C" (Controller)? Eles existem de forma clara, ou o codigo ficou mais misturado do que o padrao sugere?
+Nenhum componente de tela monta cabecalho por conta propria. Isso significa que nao existe a
+possibilidade de um botao novo "esquecer" de mandar o token: quem quiser falar com a API
+obrigatoriamente passa por esse funil. E o mesmo motivo pelo qual o tratamento de erro tambem e
+uniforme - a traducao do corpo de erro da API em mensagem exibivel acontece no mesmo lugar.
 
-_(a responder)_
+### 2. Se o token expirar no meio de uma operacao, o que acontece?
+
+A pessoa e avisada explicitamente; nao ve um erro generico.
+
+O fluxo e: a agencia responde 401 com `{"erro": "Token expirado. Faca login novamente."}`; a
+`requisicao()` detecta o 401 e marca o erro com a flag `expirado`; o controller `useSessao.tratarFalha`
+limpa a sessao e devolve a pessoa para a tela de login com a mensagem:
+
+> *"Sua sessao expirou durante a operacao. Faca login novamente - a operacao NAO foi concluida."*
+
+A segunda frase e deliberada. Em um app bancario, a duvida imediata de quem foi interrompido no meio
+de uma transferencia e "o dinheiro saiu ou nao?". Como o 401 e barrado pela dependencia de
+autenticacao **antes** de o controller tocar em qualquer saldo, nada foi aplicado - e a interface
+diz isso, em vez de deixar a pessoa no escuro.
+
+Distingo tambem "token expirado" de "token invalido/ausente", que produz uma mensagem diferente
+("Sua sessao nao e mais valida"). O caso de rede indisponivel tem seu proprio texto, indicando qual
+agencia nao respondeu.
+
+### 3. Onde ficam o "M", o "V" e o "C" no seu frontend?
+
+Existem de forma clara - a separacao e o proprio layout de pastas, escolhida justamente para
+espelhar o MVC do backend:
+
+| Camada | Pasta | Conteudo | Responsabilidade |
+|--------|-------|----------|------------------|
+| **Model** | `src/model/` | `tipos.ts`, `api.ts`, `sessao.ts` | Formato dos dados, comunicacao com as agencias, persistencia do token. Nao conhece React. |
+| **View** | `src/view/` | `LoginView.tsx`, `PainelView.tsx` | Renderizacao e captura de input. Recebe tudo por props e nao chama a API diretamente. |
+| **Controller** | `src/controller/` | `useSessao.ts`, `useBanco.ts` | Traduz acao da interface em chamada do Model, e resultado do Model em estado de tela. |
+
+O `App.tsx` faz a amarracao: decide qual View mostrar conforme o estado da sessao e injeta nela as
+acoes vindas dos Controllers.
+
+**Sendo honesto sobre onde a separacao nao e perfeita:** as Views guardam o estado dos proprios
+campos de formulario com `useState` local (o texto digitado no campo "valor", por exemplo). Em um
+MVC de livro, isso seria estado de Model. Deixei assim porque e input transitorio, que so vira dado
+de dominio no momento em que o botao e clicado - centralizar cada tecla no controller adicionaria
+indirecao sem beneficio real. A fronteira que importa foi mantida: **nenhuma View chama `fetch`, e
+nenhum modulo do Model importa React**.
+
+Vale registrar que o MVC do React nao e o MVC classico do backend: nao ha um Controller recebendo a
+requisicao e escolhendo a View. O que existe e uma separacao analoga de responsabilidades, com hooks
+no papel de Controller.
 
 ---
 
 ## Funcionalidade adicional (secao 2.1)
 
-**Funcionalidade escolhida:** idempotencia de transferencias
+**Funcionalidade escolhida:** idempotencia de transferencias via cabecalho `Idempotency-Key`.
 
 ### O que ela faz
 
-_(a responder)_
+O cliente pode enviar um cabecalho `Idempotency-Key` junto com `POST /transferencias`. A agencia
+guarda o resultado da operacao associado aquela chave. Se a **mesma chave** chegar de novo:
+
+- a transferencia **nao** e reexecutada - nenhum debito adicional acontece;
+- a resposta original e devolvida, marcada com `"repetida": true`;
+- um evento `TRANSFERENCIA_REPETIDA_IGNORADA` e gravado no log, com o timestamp de Lamport, para que
+  a repeticao fique visivel na linha do tempo em vez de silenciosa.
+
+Ha ainda o tratamento de duas chamadas simultaneas com a mesma chave: enquanto a primeira esta em
+andamento a chave fica marcada, e a segunda recebe **409 Conflict** em vez de duplicar a operacao.
+E se a transferencia falhar, a chave e liberada - retentar depois de um erro precisa continuar
+funcionando, senao a idempotencia viraria um bloqueio permanente.
+
+Evidencia do comportamento (a mesma transferencia de R$ 10,00 enviada 3 vezes):
+
+```
+envio 1: {"mensagem":"Transferencia concluida (entre agencias).","saldoOrigem":50.0,"timestampLamport":10}
+envio 2: {"mensagem":"Transferencia concluida (entre agencias).","saldoOrigem":50.0,"repetida":true}
+envio 3: {"mensagem":"Transferencia concluida (entre agencias).","saldoOrigem":50.0,"repetida":true}
+
+saldo da origem: 60.0 -> 50.0   (debitou 10, nao 30)
+saldo do destino: 40.0 -> 50.0  (creditou 10, nao 30)
+```
 
 ### Por que escolhi implementa-la
 
-_(a responder)_
+Porque ela ataca um problema que **este sprint cria e nao resolve**, e prepara o terreno para o
+Sprint 4.
+
+A Parte D termina com uma inconsistencia conhecida: quando a chamada entre agencias falha, o cliente
+recebe 502 sem saber se o credito foi aplicado ou nao. A reacao natural de qualquer cliente diante
+de um erro de rede e **tentar de novo** - e sem idempotencia, se a falha tiver ocorrido *depois* de a
+agencia de destino processar o credito (por exemplo, um timeout na resposta de volta), essa
+retentativa aplicaria a transferencia uma segunda vez. O erro de rede vira dinheiro duplicado.
+
+Alem disso, a chave de idempotencia e pre-requisito pratico das duas solucoes do Sprint 4: tanto o
+commit de um 2PC quanto a compensacao de uma Saga precisam ser reexecutaveis com seguranca, porque
+podem ser reenviados apos falha do coordenador. Implementar isso agora significa que o Sprint 4 vai
+construir sobre uma base que ja tolera reentrega, em vez de ter que voltar e adicionar.
+
+Escolhi essa em vez de um health-check ou de um limite de saque porque as outras seriam validacoes
+locais, sem relacao com os problemas de sistemas distribuidos que a disciplina esta tratando.
 
 ### Evidencia
 
@@ -101,14 +380,92 @@ _(a responder)_
 
 ## Decisoes de design
 
-### Modelo de credenciais adotado na autenticacao (exigido pela Parte F, requisito 1)
+### Modelo de credenciais adotado na autenticacao (Parte F, requisito 1)
 
-_(a responder: qual formato de credencial foi escolhido, qual o tempo de expiracao do token e por que)_
+**Decisao:** login por **usuario e senha**, onde cada usuario e dono de um conjunto de contas, e o
+token carrega esse conjunto na claim `contas`.
 
-### Tratamento da chamada interna entre agencias (exigido pela Parte F, requisito 5)
+```json
+{"sub": "ana", "tipo": "usuario", "contas": [0, 3], "iat": ..., "exp": ...}
+```
 
-_(a responder: a chamada `creditar-remoto` de agencia para agencia carrega um token igual ao das chamadas vindas do frontend, ou e tratada de forma diferente? Justificativa.)_
+**Justificativa.** Considerei tres modelos:
 
-### Escolha do framework de frontend (exigido pela Parte G)
+1. **Operador unico do banco** - um login generico que libera tudo. Rejeitado: sem nocao de dono, o
+   sistema so teria autenticacao, e qualquer pessoa logada poderia sacar de qualquer conta. Seria o
+   minimo para cumprir o requisito, mas nao permitiria implementar autorizacao de verdade.
+2. **Id da conta + senha** - cada conta e uma credencial. Rejeitado: uma pessoa com contas em
+   agencias diferentes precisaria de um login por conta, e a transferencia ficaria estranha (o token
+   valeria para uma conta so).
+3. **Usuario dono de contas** (escolhido) - modela o banco como ele funciona de fato: uma pessoa,
+   varias contas, possivelmente em agencias diferentes.
 
-_(a responder)_
+O modelo escolhido tambem exercita melhor o proprio conceito de particao: a usuaria `ana` e dona das
+contas 0 e 3, ambas na Agencia 0, enquanto seus pares tem contas em outras agencias - e a claim
+`contas` viaja no token, entao **qualquer** agencia consegue decidir sobre autorizacao sem consultar
+nenhuma base central. Isso e coerente com o argumento de escalabilidade da questao 11.3.2.
+
+As senhas nao sao guardadas em texto puro: `config.py` armazena SHA-256. Em producao usaria bcrypt
+ou Argon2 (com salt e custo configuravel); SHA-256 puro foi suficiente aqui porque o foco do sprint
+e o mecanismo de token, nao o armazenamento de credenciais.
+
+**Expiracao: 15 minutos.** Curta o bastante para limitar a janela de uso de um token vazado (nao ha
+revogacao possivel, conforme discutido em 11.3.2), e longa o bastante para uma sessao de uso normal.
+Configuravel por `EXPIRACAO_TOKEN_MINUTOS`. Para gerar a evidencia do cenario de token expirado sem
+esperar 15 minutos, ha o script `gerar_token_expirado.py`, que emite um token ja vencido usando a
+mesma chave - preferi um script separado a colocar um atalho de teste dentro da API.
+
+### Tratamento da chamada interna entre agencias (Parte F, requisito 5)
+
+**Decisao:** a rota `creditar-remoto` **e protegida**, mas por uma credencial de tipo diferente. A
+agencia de origem emite um **token de servico** de vida curta (30 segundos) e o envia no
+`Authorization`. A rota so aceita tokens com `"tipo": "servico"`, e rejeita tokens de usuario com 401.
+
+**Justificativa.** Havia tres caminhos:
+
+1. **Deixar a rota aberta**, tratando a rede interna como confiavel. Rejeitado: seria um endpoint sem
+   autenticacao capaz de creditar qualquer conta com qualquer valor. "Esta na rede interna" nao e
+   controle de acesso - e exatamente o tipo de suposicao que a arquitetura de confianca zero abandonou.
+   Alem disso, contradiz o requisito 3 da Parte F, que manda proteger tudo que modifica contas.
+2. **Repassar o token do usuario** que iniciou a transferencia. Rejeitado por dois motivos. Semantico:
+   quem chama `creditar-remoto` **nao e** a usuaria Ana, e a Agencia 0 - e o destinatario do credito
+   normalmente nem pertence a ela, entao a claim `contas` do token dela nao autoriza nada util ali.
+   Pratico: amarraria uma operacao interna do sistema ao ciclo de vida da sessao de uma pessoa, e
+   propagaria credencial de usuario entre servicos, ampliando o estrago de um vazamento.
+3. **Token de servico proprio** (escolhido). Cada agencia se identifica como `agencia-N`, com
+   `"tipo": "servico"`. A distincao de tipo importa: impede tanto que um usuario chame a rota interna
+   diretamente quanto que um token de servico seja usado para operar contas pela API publica. A
+   validade de 30 segundos cobre a duracao de uma unica chamada - se vazar, e praticamente inutil.
+
+O log registra qual agencia fez a chamada (campo `chamadaPor`), o que deixa rastro de autoria na
+linha do tempo:
+
+```json
+{"tipo": "TRANSFERENCIA_CREDITO_REMOTO", "timestampLamport": 9,
+ "detalhes": {"idConta": 1, "valor": 30.0, "origemAgencia": 0,
+ "timestampRecebido": 8, "chamadaPor": "agencia-0"}}
+```
+
+**Limitacao assumida:** como a chave secreta e compartilhada pelas 3 agencias, qualquer uma delas
+pode emitir um token se passando por outra. Para este sprint e aceitavel - as 3 agencias sao o mesmo
+codigo, sob o mesmo controle. Um sistema real usaria uma chave por agencia com assinatura assimetrica,
+de forma que a Agencia 1 pudesse verificar a assinatura da Agencia 0 sem ser capaz de produzi-la.
+
+### Escolha do framework de frontend (Parte G)
+
+**Decisao:** Vite + React + TypeScript.
+
+**Justificativa.** O requisito de plataforma era apenas "web". Escolhi React por familiaridade e
+Vite por ser o build mais leve para uma aplicacao de tela unica, sem o peso de SSR ou roteamento de
+servidor que nao teriam uso aqui. TypeScript entrou porque a unidade trata de arquitetura em
+camadas, e tipos explicitos (`Conta`, `RespostaLogin`, `ResultadoTransferencia`) tornam a fronteira
+entre Model e View verificavel pelo compilador em vez de ser so convencao de pasta.
+
+Considerei HTML/CSS/JS puro, que teria zero dependencias, mas o tratamento de erro exigido pelo
+requisito 5 e a troca de agencia do requisito 6 pedem estado de interface que ficaria verboso de
+manter na mao.
+
+O frontend nao sabe distinguir transferencia local de transferencia entre agencias - envia o pedido
+para a agencia de origem e exibe o que o backend responde, o que respeita o requisito 4. Ele calcula
+`id % 3` apenas para **orientar** quem usa a tela sobre qual agencia e dona de cada conta; a decisao
+real continua sendo do backend.

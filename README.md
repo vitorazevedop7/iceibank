@@ -53,9 +53,7 @@ iceibank/
 
 ## Como executar
 
-_(a ser preenchido conforme as partes forem implementadas)_
-
-### Backend
+### Backend - as 3 agencias
 
 ```bash
 cd agencia
@@ -64,21 +62,85 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Cada agencia sobe em um terminal proprio, identificada pela variavel de ambiente
-`AGENCIA_ID`:
+Cada agencia e o mesmo codigo, identificada pela variavel de ambiente `AGENCIA_ID`.
+Abra tres terminais:
 
 ```bash
 # Terminal 1
-AGENCIA_ID=0 python -m src.main
+cd agencia && source venv/bin/activate && AGENCIA_ID=0 python -m src.main
 # Terminal 2
-AGENCIA_ID=1 python -m src.main
+cd agencia && source venv/bin/activate && AGENCIA_ID=1 python -m src.main
 # Terminal 3
-AGENCIA_ID=2 python -m src.main
+cd agencia && source venv/bin/activate && AGENCIA_ID=2 python -m src.main
 ```
+
+As agencias sobem em `localhost:4000`, `4001` e `4002`. Se precisar de portas exclusivas
+(maquina compartilhada de laboratorio), defina `OFFSET` com os dois ultimos digitos da
+matricula: `OFFSET=42 AGENCIA_ID=0 python -m src.main`.
+
+Confira se estao no ar:
+
+```bash
+curl -s http://localhost:4000/status
+```
+
+Documentacao interativa da API (gerada pelo FastAPI): <http://localhost:4000/docs>
 
 ### Frontend
 
-_(a ser preenchido na Parte G)_
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Abre em <http://localhost:5173>. O seletor "porta de entrada" no topo escolhe com qual
+das 3 agencias a tela vai falar.
+
+### Usuarios de teste
+
+| Usuario | Senha | Contas | Agencia de cada conta |
+|---------|-------|--------|------------------------|
+| `ana`   | `senha123` | 0, 3 | Agencia 0, Agencia 0 |
+| `bruno` | `senha123` | 1, 4 | Agencia 1, Agencia 1 |
+| `carla` | `senha123` | 2, 5 | Agencia 2, Agencia 2 |
+
+### Linha do tempo unificada
+
+Depois de gerar operacoes, mescla os logs das 3 agencias ordenados por relogio de Lamport:
+
+```bash
+cd agencia && python mesclar_logs.py
+```
+
+### Testes do relogio de Lamport
+
+```bash
+cd agencia && python -m pytest tests/ -v
+```
+
+### Roteiro de demonstracao
+
+`agencia/demonstracao.sh` executa a sequencia completa (login, particao, autorizacao,
+transferencia local, transferencia entre agencias, idempotencia e cenarios de JWT),
+pausando entre as etapas para captura de evidencias:
+
+```bash
+cd agencia && ./demonstracao.sh
+```
+
+## Endpoints
+
+| Metodo | Rota | Protecao | Descricao |
+|--------|------|----------|-----------|
+| POST | `/auth/login` | publica | Autentica e devolve o JWT |
+| POST | `/contas` | token de usuario | Cria conta (recusa conta de outra agencia) |
+| GET | `/contas/{id}` | token de usuario | Consulta saldo |
+| POST | `/contas/{id}/depositar` | token de usuario | Deposito |
+| POST | `/contas/{id}/sacar` | token de usuario | Saque |
+| POST | `/transferencias` | token de usuario | Transferencia local ou entre agencias. Aceita `Idempotency-Key` |
+| POST | `/contas/{id}/creditar-remoto` | token de servico | Rota interna, chamada por outra agencia |
+| GET | `/status` | publica | Identidade da agencia, relogio de Lamport atual e contas sob sua guarda |
 
 ## Limitacao conhecida (intencional neste sprint)
 
