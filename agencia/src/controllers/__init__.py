@@ -1,1 +1,1 @@
-"""Camada Controller do MVC: contas (Parte C) e transferencias (Parte D)."""
+"""Camada Controller do MVC: autenticacao, contas (Parte C) e transferencias (Parte D)."""
