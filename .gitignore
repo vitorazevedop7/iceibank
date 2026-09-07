@@ -1,0 +1,20 @@
+# Python
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.env
+
+# Logs de eventos gerados em tempo de execucao (evidencia vai como print, nao como arquivo)
+agencia/data/*.jsonl
+
+# Frontend
+node_modules/
+dist/
+.vite/
+
+# Sistema
+.DS_Store
+Thumbs.db
+desktop.ini
