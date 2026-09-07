@@ -11,6 +11,11 @@ cada um partindo do codigo do anterior.
 | 3 | U4 - Desenvolvimento Movel | App Flutter | Consenso (eleicao de lider) |
 | 4 | U5 - Computacao em Nuvem | Containers | Transacoes distribuidas (2PC/Saga) |
 
+## Video de apresentacao
+
+<!-- COLE AQUI O LINK DO VIDEO (YouTube nao listado ou Google Drive com acesso liberado) -->
+**Link:** _(a preencher)_
+
 ## Arquitetura do Sprint 1
 
 Uma agencia e um servico REST independente. O mesmo codigo e executado 3 vezes com
