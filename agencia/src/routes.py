@@ -4,7 +4,7 @@ Nenhuma regra de negocio mora aqui - esta camada so amarra caminho HTTP,
 validacao de schema e dependencia de autenticacao ao controller correspondente.
 """
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Header, Request
 
 from src.auth import servico_autenticado, usuario_autenticado
 from src.controllers import auth_controller, contas_controller
@@ -80,8 +80,11 @@ async def rota_transferir(
     dados: TransferenciaRequest,
     request: Request,
     usuario: dict = Depends(usuario_autenticado),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ):
-    return await transferencias.transferir(dados, _estado(request), usuario)
+    return await transferencias.transferir(
+        dados, _estado(request), usuario, idempotency_key
+    )
 
 
 @router.post("/contas/{id_conta}/creditar-remoto", tags=["transferencias"])

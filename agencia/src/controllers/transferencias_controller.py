@@ -1,4 +1,9 @@
-"""Parte D - controller de transferencias (local e entre agencias)."""
+"""Parte D - controller de transferencias (local e entre agencias).
+
+Inclui a funcionalidade adicional do sprint: idempotencia via cabecalho
+`Idempotency-Key`, para que o reenvio de uma mesma transferencia nao aplique o
+debito duas vezes.
+"""
 
 import httpx
 from fastapi import HTTPException, status
@@ -9,10 +14,51 @@ from src.models import CreditoRemotoRequest, TransferenciaRequest
 
 _TEMPO_LIMITE = httpx.Timeout(5.0)
 
+# Marcador de operacao ainda em andamento no cache de idempotencia.
+_EM_ANDAMENTO = object()
 
-async def transferir(dados: TransferenciaRequest, estado, usuario: dict) -> dict:
+
+async def transferir(
+    dados: TransferenciaRequest, estado, usuario: dict, chave_idempotencia: str | None
+) -> dict:
     exigir_dono_da_conta(usuario, dados.idOrigem)
-    return await _executar_transferencia(dados, estado)
+
+    # --- Funcionalidade adicional: idempotencia -----------------------------
+    if chave_idempotencia:
+        registrado = estado.idempotencia.get(chave_idempotencia)
+        if registrado is _EM_ANDAMENTO:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "erro": "Uma transferencia com esta Idempotency-Key ainda esta em andamento."
+                },
+            )
+        if registrado is not None:
+            ts = await estado.relogio.evento_local()
+            estado.registro.registrar(
+                "TRANSFERENCIA_REPETIDA_IGNORADA",
+                ts,
+                {
+                    "chaveIdempotencia": chave_idempotencia,
+                    "idOrigem": dados.idOrigem,
+                    "idDestino": dados.idDestino,
+                    "valor": dados.valor,
+                },
+            )
+            return {**registrado, "repetida": True}
+        estado.idempotencia[chave_idempotencia] = _EM_ANDAMENTO
+
+    try:
+        resultado = await _executar_transferencia(dados, estado)
+    except Exception:
+        # Falhou: libera a chave para que o cliente possa tentar de novo.
+        if chave_idempotencia:
+            estado.idempotencia.pop(chave_idempotencia, None)
+        raise
+
+    if chave_idempotencia:
+        estado.idempotencia[chave_idempotencia] = resultado
+    return resultado
 
 
 async def _executar_transferencia(dados: TransferenciaRequest, estado) -> dict:
