@@ -1,0 +1,1 @@
+{"root":["./src/App.tsx","./src/main.tsx","./src/controller/useBanco.ts","./src/controller/useSessao.ts","./src/model/api.ts","./src/model/sessao.ts","./src/model/tipos.ts","./src/view/LoginView.tsx","./src/view/PainelView.tsx"],"version":"5.9.3"}
