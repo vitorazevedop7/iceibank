@@ -14,7 +14,7 @@ cada um partindo do codigo do anterior.
 ## Video de apresentacao
 
 <!-- COLE AQUI O LINK DO VIDEO (YouTube nao listado ou Google Drive com acesso liberado) -->
-**Link:** _(a preencher)_
+**Link:** https://drive.google.com/file/d/1Dtzv3RyZx0dm33Ogu5a_OrFzn73XzvO4/view?usp=sharing
 
 ## Arquitetura do Sprint 1
 
