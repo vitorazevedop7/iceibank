@@ -1,0 +1,8 @@
+[Agencia 1] ouvindo na porta 4001
+[Lamport 1] CRIAR_CONTA {'id': 1, 'nomeAluno': 'Bruno', 'saldoInicial': 50.0}
+[Lamport 2] DEPOSITO {'id': 1, 'valor': 5.0, 'novoSaldo': 55.0}
+[Lamport 3] DEPOSITO {'id': 1, 'valor': 5.0, 'novoSaldo': 60.0}
+[Lamport 4] DEPOSITO {'id': 1, 'valor': 5.0, 'novoSaldo': 65.0}
+[Lamport 5] DEPOSITO {'id': 1, 'valor': 5.0, 'novoSaldo': 70.0}
+[Lamport 6] DEPOSITO {'id': 1, 'valor': 5.0, 'novoSaldo': 75.0}
+[Lamport 9] TRANSFERENCIA_CREDITO_REMOTO {'idConta': 1, 'valor': 15.0, 'origemAgencia': 2, 'timestampRecebido': 8, 'chamadaPor': 'agencia-2'}

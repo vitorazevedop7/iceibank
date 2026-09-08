@@ -1,0 +1,8 @@
+[Agencia 2] ouvindo na porta 4002
+[Lamport 1] CRIAR_CONTA {'id': 2, 'nomeAluno': 'Carla', 'saldoInicial': 80.0}
+[Lamport 2] DEPOSITO {'id': 2, 'valor': 5.0, 'novoSaldo': 85.0}
+[Lamport 3] DEPOSITO {'id': 2, 'valor': 5.0, 'novoSaldo': 90.0}
+[Lamport 4] DEPOSITO {'id': 2, 'valor': 5.0, 'novoSaldo': 95.0}
+[Lamport 5] DEPOSITO {'id': 2, 'valor': 5.0, 'novoSaldo': 100.0}
+[Lamport 6] DEPOSITO {'id': 2, 'valor': 5.0, 'novoSaldo': 105.0}
+[Lamport 7] TRANSFERENCIA_DEBITO {'idOrigem': 2, 'idDestino': 1, 'valor': 15.0, 'agenciaDestino': 1}
