@@ -134,6 +134,13 @@ pausando entre as etapas para captura de evidencias:
 cd agencia && ./demonstracao.sh
 ```
 
+Em macOS, `agencia/capturar-evidencias.sh` faz o mesmo percurso e **captura os prints
+automaticamente** em `evidencias/sprint1/`, com a data visivel em cada tela:
+
+```bash
+cd agencia && ./capturar-evidencias.sh
+```
+
 ## Endpoints
 
 | Metodo | Rota | Protecao | Descricao |
