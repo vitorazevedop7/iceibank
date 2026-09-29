@@ -2,6 +2,8 @@
 
 from pydantic import BaseModel, Field
 
+from src import config
+
 
 class CriarContaRequest(BaseModel):
     id: int = Field(ge=0, description="Identificador da conta; define a agencia dona (id % 3)")
@@ -21,7 +23,11 @@ class TransferenciaRequest(BaseModel):
 
 class CreditoRemotoRequest(BaseModel):
     valor: float = Field(gt=0)
-    timestampLamport: int = Field(ge=0)
+    timestampVetorial: list[int] = Field(
+        min_length=config.NUMERO_AGENCIAS,
+        max_length=config.NUMERO_AGENCIAS,
+        description="Vetor do relogio da agencia de origem no momento do envio",
+    )
     origemAgencia: int = Field(ge=0)
 
 

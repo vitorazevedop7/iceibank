@@ -113,7 +113,7 @@ async def _executar_transferencia(dados: TransferenciaRequest, estado) -> dict:
             "mensagem": "Transferencia concluida (mesma agencia).",
             "escopo": "local",
             "saldoOrigem": conta_origem.saldo,
-            "timestampLamport": ts_credito,
+            "timestampVetorial": ts_credito,
         }
 
     # --- Caso 2: entre agencias -------------------------------------------
@@ -131,7 +131,8 @@ async def _executar_transferencia(dados: TransferenciaRequest, estado) -> dict:
         },
     )
 
-    # Regra 2 de Lamport: incrementa e anexa o timestamp a mensagem enviada.
+    # Regra 2 do relogio vetorial: incrementa a propria posicao e anexa o vetor
+    # inteiro a mensagem enviada.
     ts_envio = await estado.relogio.ao_enviar()
     url_destino = config.url_da_agencia(agencia_destino)
 
@@ -141,7 +142,7 @@ async def _executar_transferencia(dados: TransferenciaRequest, estado) -> dict:
                 f"{url_destino}/contas/{dados.idDestino}/creditar-remoto",
                 json={
                     "valor": dados.valor,
-                    "timestampLamport": ts_envio,
+                    "timestampVetorial": ts_envio,
                     "origemAgencia": estado.id_agencia,
                 },
                 headers={
@@ -183,7 +184,7 @@ async def _executar_transferencia(dados: TransferenciaRequest, estado) -> dict:
         "escopo": "entre-agencias",
         "agenciaDestino": agencia_destino,
         "saldoOrigem": conta_origem.saldo,
-        "timestampLamport": ts_envio,
+        "timestampVetorial": ts_envio,
     }
 
 
@@ -192,10 +193,10 @@ async def creditar_remoto(
 ) -> dict:
     """Recebe o credito enviado por outra agencia.
 
-    Regra 3 de Lamport: o relogio local e ajustado com base no timestamp recebido,
-    para max(local, recebido) + 1.
+    Regra 3 do relogio vetorial: o vetor local vira o maximo posicao a posicao entre
+    ele e o vetor recebido, e depois a propria posicao e incrementada.
     """
-    ts = await estado.relogio.ao_receber(dados.timestampLamport)
+    ts = await estado.relogio.ao_receber(dados.timestampVetorial)
 
     conta = estado.contas.get(id_conta)
     if conta is None:
@@ -212,12 +213,12 @@ async def creditar_remoto(
             "idConta": id_conta,
             "valor": dados.valor,
             "origemAgencia": dados.origemAgencia,
-            "timestampRecebido": dados.timestampLamport,
+            "timestampRecebido": dados.timestampVetorial,
             "chamadaPor": servico.get("sub"),
         },
     )
     return {
         "mensagem": "Credito remoto aplicado.",
         "saldoAtual": conta.saldo,
-        "timestampLamport": ts,
+        "timestampVetorial": ts,
     }

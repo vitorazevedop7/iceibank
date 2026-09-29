@@ -1,6 +1,6 @@
 """Parte C - controller de contas: criar, consultar, depositar e sacar.
 
-Toda operacao que altera ou cria estado gera um evento local no relogio de Lamport
+Toda operacao que altera ou cria estado gera um evento local no relogio vetorial
 (regra 1) e e registrada no log da agencia.
 """
 
@@ -95,7 +95,7 @@ async def status_agencia(estado) -> dict:
     """Rota utilitaria: identidade da agencia, relogio atual e contas sob sua guarda."""
     return {
         "agencia": estado.id_agencia,
-        "relogioLamport": await estado.relogio.valor_atual(),
+        "relogioVetorial": await estado.relogio.valor_atual(),
         "quantidadeContas": len(estado.contas),
         "contas": sorted(estado.contas.keys()),
     }

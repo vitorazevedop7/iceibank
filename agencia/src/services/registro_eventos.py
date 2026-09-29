@@ -1,6 +1,8 @@
 """Parte B - registro de eventos em arquivo .jsonl (uma linha JSON por evento).
 
-Esses arquivos sao a materia-prima da linha do tempo unificada da Parte E.
+Esses arquivos sao a materia-prima da linha do tempo causal (mesclar_logs.py).
+No Sprint 2 o carimbo logico deixa de ser um numero (Lamport) e passa a ser o
+vetor completo do relogio vetorial.
 """
 
 import json
@@ -20,22 +22,24 @@ class RegistroEventos:
             _PASTA_DADOS, f"eventos-{nome_agencia}.jsonl"
         )
 
-    def registrar(self, tipo: str, timestamp_lamport: int, detalhes: dict) -> dict:
+    def registrar(
+        self, tipo: str, timestamp_vetorial: list[int], detalhes: dict
+    ) -> dict:
         """Grava um evento e o ecoa no console da agencia.
 
-        Cada evento guarda dois carimbos de tempo: `timestampLamport` (o relogio
-        logico, unico usado para ordenar) e `horaParede` (o relogio fisico da
-        maquina, mantido apenas para comparacao na Parte E - nenhuma decisao do
-        sistema depende dele).
+        Cada evento guarda dois carimbos de tempo: `timestampVetorial` (o vetor do
+        relogio logico, usado para decidir causalidade e concorrencia) e
+        `horaParede` (o relogio fisico da maquina, usado apenas para listar os
+        eventos numa ordem legivel - nenhuma decisao do sistema depende dele).
         """
         evento = {
             "agencia": self.nome_agencia,
             "tipo": tipo,
-            "timestampLamport": timestamp_lamport,
+            "timestampVetorial": list(timestamp_vetorial),
             "horaParede": datetime.now(timezone.utc).isoformat(),
             "detalhes": detalhes,
         }
         with open(self.caminho_arquivo, "a", encoding="utf-8") as arquivo:
             arquivo.write(json.dumps(evento, ensure_ascii=False) + "\n")
-        print(f"[Lamport {timestamp_lamport}] {tipo} {detalhes}", flush=True)
+        print(f"[Vetor {list(timestamp_vetorial)}] {tipo} {detalhes}", flush=True)
         return evento

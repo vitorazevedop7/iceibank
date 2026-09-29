@@ -14,17 +14,17 @@ from fastapi.responses import JSONResponse
 
 from src import config
 from src.routes import router
-from src.services import RegistroEventos, RelogioLamport
+from src.services import RegistroEventos, RelogioVetorial
 
 
 def criar_app(id_agencia: int) -> FastAPI:
     app = FastAPI(
         title=f"ICEIBank - Agencia {id_agencia}",
         description=(
-            "Sprint 1: API REST/MVC com relogio logico de Lamport, "
+            "Sprint 2: API REST/MVC com relogio vetorial, "
             "particionamento de contas e autenticacao JWT."
         ),
-        version="1.0.0",
+        version="2.0.0",
     )
 
     # O frontend (Vite) roda em outra origem e precisa falar com as 3 agencias.
@@ -37,7 +37,7 @@ def criar_app(id_agencia: int) -> FastAPI:
 
     # Estado do processo - equivalente ao app.locals do exemplo em Express.
     app.state.id_agencia = id_agencia
-    app.state.relogio = RelogioLamport()
+    app.state.relogio = RelogioVetorial(id_agencia, config.NUMERO_AGENCIAS)
     app.state.registro = RegistroEventos(f"agencia-{id_agencia}")
     app.state.contas = {}
     app.state.idempotencia = {}

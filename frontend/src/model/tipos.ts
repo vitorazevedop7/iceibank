@@ -17,13 +17,13 @@ export interface ResultadoTransferencia {
   escopo: 'local' | 'entre-agencias'
   agenciaDestino?: number
   saldoOrigem: number
-  timestampLamport: number
+  timestampVetorial: number[]
   repetida?: boolean
 }
 
 export interface StatusAgencia {
   agencia: number
-  relogioLamport: number
+  relogioVetorial: number[]
   quantidadeContas: number
   contas: number[]
 }

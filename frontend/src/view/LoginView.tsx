@@ -32,7 +32,7 @@ export function LoginView({ agencia, aoTrocarAgencia, aoEntrar, aviso }: Props) 
   return (
     <div className="cartao cartao-login">
       <h1>ICEIBank</h1>
-      <p className="subtitulo">Sprint 1 &middot; API REST/MVC com relogio de Lamport</p>
+      <p className="subtitulo">Sprint 2 &middot; API REST/MVC com relogio vetorial</p>
 
       {aviso && <div className="alerta alerta-aviso">{aviso}</div>}
 

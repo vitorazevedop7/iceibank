@@ -107,7 +107,7 @@ export function useBanco(agencia: number, aoFalhar: (erro: unknown) => void) {
             tipo: 'sucesso',
             texto:
               `Transferencia de R$ ${valor.toFixed(2)} concluida ${onde}. ` +
-              `Saldo da origem: R$ ${r.saldoOrigem.toFixed(2)} | Lamport ${r.timestampLamport}`,
+              `Saldo da origem: R$ ${r.saldoOrigem.toFixed(2)} | Vetor [${r.timestampVetorial.join(', ')}]`,
           }
         },
       ),
