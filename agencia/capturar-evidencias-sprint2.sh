@@ -8,11 +8,16 @@
 #   cd iceibank/agencia
 #   source venv/bin/activate
 #   ./capturar-evidencias-sprint2.sh resiliencia
+#   ./capturar-evidencias-sprint2.sh linha-do-tempo
 #
 # Cenarios:
-#   resiliencia  -> ../evidencias/sprint2/resiliencia-fila.png
-#                   (Parte C, tarefa 3-4: Agencia 1 fora do ar, transferencia
-#                    publicada mesmo assim, e o que acontece quando ela volta)
+#   resiliencia     -> ../evidencias/sprint2/resiliencia-fila.png
+#                      (Parte C, tarefa 3-4: Agencia 1 fora do ar, transferencia
+#                       publicada mesmo assim, e o que acontece quando ela volta)
+#   linha-do-tempo  -> ../evidencias/sprint2/linha-do-tempo-causal.png
+#                      (Parte D: eventos independentes em agencias diferentes
+#                       aparecem como concorrentes; o par envio -> credito de
+#                       uma transferencia aparece como causal)
 #
 # Requer RABBITMQ_URL em agencia/.env (ou no terminal).
 
@@ -25,7 +30,7 @@ fi
 
 CENARIO="${1:-}"
 if [ -z "$CENARIO" ]; then
-  echo "Uso: ./capturar-evidencias-sprint2.sh resiliencia"
+  echo "Uso: ./capturar-evidencias-sprint2.sh resiliencia|linha-do-tempo"
   exit 1
 fi
 
@@ -34,6 +39,7 @@ LOGS="$(pwd)/.logs-execucao"
 PORTA_BASE=$((4000 + ${OFFSET:-0}))
 A0="http://localhost:$PORTA_BASE"
 A1="http://localhost:$((PORTA_BASE + 1))"
+A2="http://localhost:$((PORTA_BASE + 2))"
 
 mkdir -p "$EVID" "$LOGS"
 
@@ -167,8 +173,42 @@ cenario_resiliencia() {
   capturar "resiliencia-fila.png"
 }
 
+# ==========================================================================
+cenario_linha_do_tempo() {
+  TA=$(token_de ana "$A0")
+  TB=$(token_de bruno "$A1")
+  TC=$(token_de carla "$A2")
+
+  # 1) Eventos INDEPENDENTES: cada agencia cria a sua conta ao mesmo tempo, sem
+  #    nenhuma mensagem trocada entre elas -> devem sair como concorrentes.
+  curl -s -o /dev/null -X POST "$A0/contas" -H "Authorization: Bearer $TA" \
+    -H 'Content-Type: application/json' -d '{"id":0,"nomeAluno":"Ana","saldoInicial":100}' &
+  curl -s -o /dev/null -X POST "$A1/contas" -H "Authorization: Bearer $TB" \
+    -H 'Content-Type: application/json' -d '{"id":1,"nomeAluno":"Bruno","saldoInicial":50}' &
+  curl -s -o /dev/null -X POST "$A2/contas" -H "Authorization: Bearer $TC" \
+    -H 'Content-Type: application/json' -d '{"id":2,"nomeAluno":"Carla","saldoInicial":80}' &
+  wait
+
+  # 2) Evento CAUSAL: transferencia da Agencia 0 para a Agencia 1 pela fila.
+  curl -s -o /dev/null -X POST "$A0/transferencias" -H "Authorization: Bearer $TA" \
+    -H 'Content-Type: application/json' -d '{"idOrigem":0,"idDestino":1,"valor":30}'
+  sleep 2
+
+  # 3) Mais um evento independente na Agencia 2, que nao participou da transferencia.
+  curl -s -o /dev/null -X POST "$A2/contas/2/depositar" -H "Authorization: Bearer $TC" \
+    -H 'Content-Type: application/json' -d '{"valor":5}'
+
+  etapa "Parte D - linha do tempo causal (relogio vetorial)"
+  echo "Cenario: contas criadas em paralelo nas 3 agencias, transferencia 0 -> 1 pela"
+  echo "fila e um deposito na Agencia 2. \$ python mesclar_logs.py"
+  echo
+  python mesclar_logs.py
+  capturar "linha-do-tempo-causal.png"
+}
+
 case "$CENARIO" in
   resiliencia) preparar; cenario_resiliencia ;;
+  linha-do-tempo) preparar; cenario_linha_do_tempo ;;
   *) echo "Cenario desconhecido: $CENARIO"; exit 1 ;;
 esac
 
