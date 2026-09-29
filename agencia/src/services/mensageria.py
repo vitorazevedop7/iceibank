@@ -8,9 +8,18 @@ duraveis.
 Topologia (Publish/Subscribe com exchange do tipo topic):
 
     exchange  iceibank.eventos (topic, duravel)
-      ├── agencia.0.creditar ──> fila-agencia-0 (duravel)
-      ├── agencia.1.creditar ──> fila-agencia-1 (duravel)
-      └── agencia.2.creditar ──> fila-agencia-2 (duravel)
+      ├── agencia.0.creditar ──> fila-agencia-0 (duravel) ─┐
+      ├── agencia.1.creditar ──> fila-agencia-1 (duravel) ─┤ rejeitadas
+      └── agencia.2.creditar ──> fila-agencia-2 (duravel) ─┘ (dead-letter)
+                                                            │
+    exchange  iceibank.mortas (fanout, duravel) <───────────┘
+      └──> fila-mortas (duravel)
+
+Funcionalidade adicional do sprint (dead-letter queue): uma mensagem que falha ao
+ser processada ganha UMA nova tentativa; se falhar de novo, o consumidor a
+rejeita sem reenfileirar e o proprio RabbitMQ a move para `fila-mortas` (argumento
+x-dead-letter-exchange das filas das agencias), em vez de ela simplesmente
+sumir. De la ela pode ser inspecionada e reprocessada (ver mensagens_mortas.py).
 
 Este modulo e so infraestrutura (conectar, declarar, publicar, consumir). A regra
 de negocio do credito remoto fica no controller de transferencias.
@@ -33,15 +42,23 @@ from aio_pika.abc import (
     AbstractRobustChannel,
     AbstractRobustConnection,
 )
+from aio_pika.exceptions import ChannelPreconditionFailed
 
 EXCHANGE = "iceibank.eventos"
+EXCHANGE_MORTAS = "iceibank.mortas"
+FILA_MORTAS = "fila-mortas"
+
+# Argumento que liga cada fila de agencia a exchange de mensagens mortas: o que
+# for rejeitado sem reenfileirar e desviado pelo broker para la.
+ARGUMENTOS_FILA_AGENCIA = {"x-dead-letter-exchange": EXCHANGE_MORTAS}
 
 # Tempo maximo esperando o broker confirmar (publisher confirm) uma publicacao.
 TEMPO_LIMITE_PUBLICACAO_SEGUNDOS = 5
 
 log = logging.getLogger("iceibank.mensageria")
 
-TratadorMensagem = Callable[[dict], Awaitable[None]]
+# O tratador recebe o corpo da mensagem e se ela e uma reentrega (segunda tentativa).
+TratadorMensagem = Callable[[dict, bool], Awaitable[None]]
 
 
 def routing_key_credito(id_agencia: int) -> str:
@@ -64,6 +81,7 @@ class Mensageria:
         # connect_robust reconecta sozinho se a conexao com o broker cair, e
         # restaura canal, filas e consumidores ao voltar.
         self._conexao = await aio_pika.connect_robust(self._url)
+        await self._declarar_topologia()
         # publisher_confirms: o publish so retorna depois que o broker confirma que
         # recebeu (e, com mensagem persistente e fila duravel, gravou) a mensagem.
         # on_return_raises: mensagem sem fila vinculada vira excecao, nao silencio.
@@ -72,23 +90,52 @@ class Mensageria:
         )
         # Uma mensagem por vez: o proximo credito so e entregue depois do ack do anterior.
         await self._canal.set_qos(prefetch_count=1)
-        await self._declarar_topologia()
+        self._exchange = await self._canal.declare_exchange(
+            EXCHANGE, aio_pika.ExchangeType.TOPIC, durable=True
+        )
 
     async def _declarar_topologia(self) -> None:
-        """Declara exchange, as filas de TODAS as agencias e os bindings.
+        """Declara as exchanges, as filas de TODAS as agencias, a fila-mortas e os bindings.
 
         Cada agencia declara a topologia inteira, nao so a propria fila. Se so a
         dona declarasse a fila, uma agencia que nunca subiu naquele broker nao
         teria fila, e uma mensagem com a routing key dela seria descartada pelo
         RabbitMQ. As declaracoes sao idempotentes: repetir nao muda nada.
         """
-        assert self._canal is not None
-        self._exchange = await self._canal.declare_exchange(
-            EXCHANGE, aio_pika.ExchangeType.TOPIC, durable=True
+        assert self._conexao is not None
+        canal = await self._conexao.channel()
+        mortas = await canal.declare_exchange(
+            EXCHANGE_MORTAS, aio_pika.ExchangeType.FANOUT, durable=True
         )
+        fila_mortas = await canal.declare_queue(FILA_MORTAS, durable=True)
+        await fila_mortas.bind(mortas)
+        await canal.declare_exchange(EXCHANGE, aio_pika.ExchangeType.TOPIC, durable=True)
+        await canal.close()
+
         for id_agencia in range(self._numero_agencias):
-            fila = await self._canal.declare_queue(nome_fila(id_agencia), durable=True)
-            await fila.bind(self._exchange, routing_key=routing_key_credito(id_agencia))
+            await self._declarar_fila_agencia(id_agencia)
+
+    async def _declarar_fila_agencia(self, id_agencia: int) -> None:
+        assert self._conexao is not None
+        nome = nome_fila(id_agencia)
+        canal = await self._conexao.channel()
+        try:
+            fila = await canal.declare_queue(
+                nome, durable=True, arguments=ARGUMENTOS_FILA_AGENCIA
+            )
+        except ChannelPreconditionFailed:
+            # A fila ja existia sem o argumento de dead-letter (criada antes desta
+            # funcionalidade) e o RabbitMQ nao deixa mudar argumentos de uma fila
+            # existente. Recria - mas so se estiver vazia, para nao perder credito.
+            canal = await self._conexao.channel()
+            await canal.queue_delete(nome, if_empty=True)
+            fila = await canal.declare_queue(
+                nome, durable=True, arguments=ARGUMENTOS_FILA_AGENCIA
+            )
+            print(f"[Mensageria] {nome} recriada com dead-letter para {FILA_MORTAS}", flush=True)
+        exchange = await canal.get_exchange(EXCHANGE)
+        await fila.bind(exchange, routing_key=routing_key_credito(id_agencia))
+        await canal.close()
 
     async def publicar(self, routing_key: str, corpo: dict, id_mensagem: str) -> None:
         """Publica uma mensagem persistente e espera a confirmacao do broker.
@@ -114,20 +161,33 @@ class Mensageria:
     async def consumir(self, id_agencia: int, tratador: TratadorMensagem) -> None:
         """Assina a fila desta agencia e entrega cada mensagem ao tratador.
 
-        O ack so e enviado depois que o tratador termina sem erro. Se ele levantar
-        excecao (ou o corpo nao for JSON), a mensagem e rejeitada sem reenfileirar.
+        - tratador terminou sem erro           -> ack (mensagem removida da fila)
+        - falhou na primeira entrega            -> reenfileira para uma nova tentativa
+        - falhou de novo (mensagem reentregue)  -> rejeita sem reenfileirar; o broker
+                                                   a desvia para a fila-mortas
         """
         assert self._canal is not None
         fila = await self._canal.get_queue(nome_fila(id_agencia))
 
         async def ao_chegar(mensagem: AbstractIncomingMessage) -> None:
-            async with mensagem.process(requeue=False):
-                try:
-                    corpo = json.loads(mensagem.body)
-                except json.JSONDecodeError:
-                    log.error("Mensagem %s descartada: corpo nao e JSON.", mensagem.message_id)
-                    raise
-                await tratador(corpo)
+            reentrega = bool(mensagem.redelivered)
+            try:
+                corpo = json.loads(mensagem.body)
+                await tratador(corpo, reentrega)
+            except Exception as erro:
+                if reentrega:
+                    await mensagem.reject(requeue=False)
+                    destino = f"enviada para a {FILA_MORTAS}"
+                else:
+                    await mensagem.reject(requeue=True)
+                    destino = "reenfileirada para nova tentativa"
+                print(
+                    f"[Mensageria] mensagem {mensagem.message_id} falhou "
+                    f"({type(erro).__name__}: {erro}); {destino}",
+                    flush=True,
+                )
+                return
+            await mensagem.ack()
 
         await fila.consume(ao_chegar)
 

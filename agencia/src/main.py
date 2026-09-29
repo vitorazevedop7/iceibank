@@ -29,8 +29,10 @@ def criar_app(id_agencia: int) -> FastAPI:
         await mensageria.conectar()
         app.state.mensageria = mensageria
 
-        async def tratar_credito(corpo: dict) -> None:
-            await transferencias_controller.processar_credito_remoto(corpo, app.state)
+        async def tratar_credito(corpo: dict, reentrega: bool) -> None:
+            await transferencias_controller.processar_credito_remoto(
+                corpo, app.state, reentrega
+            )
 
         await mensageria.consumir(id_agencia, tratar_credito)
         print(f"[Agencia {id_agencia}] consumindo a fila fila-agencia-{id_agencia}", flush=True)

@@ -9,6 +9,7 @@
 #   source venv/bin/activate
 #   ./capturar-evidencias-sprint2.sh resiliencia
 #   ./capturar-evidencias-sprint2.sh linha-do-tempo
+#   ./capturar-evidencias-sprint2.sh dead-letter
 #
 # Cenarios:
 #   resiliencia     -> ../evidencias/sprint2/resiliencia-fila.png
@@ -18,6 +19,9 @@
 #                      (Parte D: eventos independentes em agencias diferentes
 #                       aparecem como concorrentes; o par envio -> credito de
 #                       uma transferencia aparece como causal)
+#   dead-letter     -> ../evidencias/sprint2/funcionalidade-adicional.png
+#                      (credito para conta inexistente: 2 tentativas, vai para a
+#                       fila-mortas, conta recriada e mensagem reprocessada)
 #
 # Requer RABBITMQ_URL em agencia/.env (ou no terminal).
 
@@ -30,7 +34,7 @@ fi
 
 CENARIO="${1:-}"
 if [ -z "$CENARIO" ]; then
-  echo "Uso: ./capturar-evidencias-sprint2.sh resiliencia|linha-do-tempo"
+  echo "Uso: ./capturar-evidencias-sprint2.sh resiliencia|linha-do-tempo|dead-letter"
   exit 1
 fi
 
@@ -127,8 +131,8 @@ preparar() {
   pkill -f "python -m src.main" 2>/dev/null
   sleep 1
   rm -f data/*.jsonl
-  for id in 0 1 2; do subir_agencia $id; done
-  for id in 0 1 2; do esperar_agencia $id; done
+  # Uma de cada vez: a primeira a subir declara (e, se preciso, migra) as filas.
+  for id in 0 1 2; do subir_agencia $id; esperar_agencia $id; done
   sleep 2   # tempo para cada agencia terminar de assinar a sua fila
 }
 
@@ -206,7 +210,44 @@ cenario_linha_do_tempo() {
   capturar "linha-do-tempo-causal.png"
 }
 
+# ==========================================================================
+cenario_dead_letter() {
+  TA=$(token_de ana "$A0")
+  TB=$(token_de bruno "$A1")
+  curl -s -o /dev/null -X POST "$A0/contas" -H "Authorization: Bearer $TA" \
+    -H 'Content-Type: application/json' -d '{"id":0,"nomeAluno":"Ana","saldoInicial":100}'
+
+  etapa "Funcionalidade adicional - dead-letter queue (fila-mortas)"
+  echo "Conta 0 (Ana) criada na Agencia 0. A conta 1 NAO existe na Agencia 1."
+  passo "1) Transferencia de R\$30 da conta 0 para a conta 1 (inexistente)"
+  curl -s -X POST "$A0/transferencias" -H "Authorization: Bearer $TA" \
+    -H 'Content-Type: application/json' -d '{"idOrigem":0,"idDestino":1,"valor":30}' \
+    -w '   [HTTP %{http_code}]\n' | sed 's/^/   /'
+  sleep 2
+  echo "   log da Agencia 1 (duas tentativas):"
+  grep -E "FALHOU|Mensageria" "$LOGS/agencia-1.log" | cut -c1-198 | sed 's/^/     /'
+
+  passo "2) O credito nao sumiu: esta na fila-mortas"
+  echo "   \$ python mensagens_mortas.py"
+  python mensagens_mortas.py | sed 's/^/   /'
+
+  passo "3) Conta 1 recriada na Agencia 1 e mensagem reprocessada"
+  curl -s -X POST "$A1/contas" -H "Authorization: Bearer $TB" \
+    -H 'Content-Type: application/json' -d '{"id":1,"nomeAluno":"Bruno","saldoInicial":50}' \
+    -w '   [HTTP %{http_code}]\n' | sed 's/^/   /'
+  echo "   \$ python mensagens_mortas.py --reprocessar"
+  python mensagens_mortas.py --reprocessar | sed 's/^/   /'
+  sleep 2
+
+  passo "4) Resultado"
+  printf '   saldo da conta 1: '; curl -s "$A1/contas/1" -H "Authorization: Bearer $TB"; echo
+  printf '   mensagens na fila-mortas: '; mensagens_na_fila fila-mortas
+  grep "TRANSFERENCIA_CREDITO_REMOTO" "$LOGS/agencia-1.log" | cut -c1-198 | sed 's/^/     /'
+  capturar "funcionalidade-adicional.png"
+}
+
 case "$CENARIO" in
+  dead-letter) preparar; cenario_dead_letter ;;
   resiliencia) preparar; cenario_resiliencia ;;
   linha-do-tempo) preparar; cenario_linha_do_tempo ;;
   *) echo "Cenario desconhecido: $CENARIO"; exit 1 ;;

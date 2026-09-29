@@ -213,22 +213,31 @@ async def _executar_transferencia(dados: TransferenciaRequest, estado) -> dict:
     }
 
 
-async def processar_credito_remoto(corpo: dict, estado) -> None:
+class CreditoNaoAplicado(Exception):
+    """O credito chegou pela fila mas nao pode ser aplicado nesta agencia.
+
+    Levantar esta excecao faz o consumidor rejeitar a mensagem (ver
+    services/mensageria.py): na primeira vez ela volta para a fila para uma nova
+    tentativa; na segunda, o RabbitMQ a desvia para a fila-mortas.
+    """
+
+
+async def processar_credito_remoto(corpo: dict, estado, reentrega: bool = False) -> None:
     """Consumidor: aplica um credito publicado por outra agencia.
 
     Faz o papel que no Sprint 1 era da rota creditar-remoto, mas e chamado pelo
-    consumidor do RabbitMQ (services/mensageria.py), nao pelo Express/FastAPI -
-    por isso nao passa por nenhuma verificacao de JWT.
+    consumidor do RabbitMQ (services/mensageria.py), nao pelo FastAPI - por isso
+    nao passa por nenhuma verificacao de JWT.
 
     Regra 3 do relogio vetorial: o vetor local vira o maximo posicao a posicao
-    entre ele e o vetor recebido, e depois a propria posicao e incrementada.
+    entre ele e o vetor recebido, e depois a propria posicao e incrementada. Cada
+    entrega (inclusive uma reentrega) e um evento de recebimento.
     """
     try:
         mensagem = MensagemCredito.model_validate(corpo)
     except ValidationError as erro:
         # Mensagem malformada: nao ha vetor confiavel para sincronizar o relogio.
-        print(f"[Mensageria] mensagem de credito invalida descartada: {erro}", flush=True)
-        return
+        raise CreditoNaoAplicado(f"mensagem de credito invalida: {erro.error_count()} erro(s)")
 
     ts = await estado.relogio.ao_receber(mensagem.vetorEnvio)
 
@@ -245,11 +254,19 @@ async def processar_credito_remoto(corpo: dict, estado) -> None:
     if conta is None:
         # A mensagem chegou, mas a conta nao existe (ex.: a agencia reiniciou e
         # perdeu as contas, que vivem so em memoria). A mensageria nao perdeu
-        # nada - quem falhou foi o estado da agencia.
+        # nada - quem falhou foi o estado da agencia. Em vez de descartar o
+        # credito, a mensagem e rejeitada e acaba na fila-mortas.
         estado.registro.registrar(
-            "CREDITO_REMOTO_FALHOU", ts, {**detalhes, "motivo": "conta nao encontrada"}
+            "CREDITO_REMOTO_FALHOU",
+            ts,
+            {
+                **detalhes,
+                "motivo": "conta nao encontrada",
+                "tentativa": 2 if reentrega else 1,
+                "destino": "fila-mortas" if reentrega else "nova tentativa",
+            },
         )
-        return
+        raise CreditoNaoAplicado(f"conta {mensagem.idConta} nao encontrada")
 
     conta.saldo += mensagem.valor
     estado.registro.registrar(
