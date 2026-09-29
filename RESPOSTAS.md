@@ -1,9 +1,331 @@
-# ICEIBank - Sprint 1: Respostas e decisoes de design
+# ICEIBank - Respostas e decisoes de design
 
 Disciplina de Sistemas Distribuidos - PUC Minas
 Backend em Python + FastAPI | Frontend em Vite + React + TypeScript
 
+- [Sprint 2 - Mensageria (Publish/Subscribe) e relogio vetorial](#sprint-2---mensageria-publishsubscribe-e-relogio-vetorial)
+- [Sprint 1 - API REST/MVC e relogio de Lamport](#sprint-1---api-restmvc-e-relogio-de-lamport)
+
 ---
+
+# Sprint 2 - Mensageria (Publish/Subscribe) e relogio vetorial
+
+Evidencias em `evidencias/sprint2/`. Todas foram geradas pelo script
+`agencia/capturar-evidencias-sprint2.sh`, executado contra a instancia RabbitMQ do CloudAMQP
+(plano Little Lemur).
+
+| Print | O que mostra |
+|-------|--------------|
+| `transferencia-assincrona.png` | transferencia 0 -> 1 pela fila, com o log das duas agencias |
+| `resiliencia-fila.png` | Agencia 1 fora do ar, mensagem retida na fila e o que acontece quando ela volta |
+| `linha-do-tempo-causal.png` | pares concorrentes e o par causal envio -> credito |
+| `funcionalidade-adicional.png` | dead-letter queue: falha, fila-mortas, reprocessamento |
+| `frontend-regressao.png` | frontend do Sprint 1 fazendo uma transferencia entre agencias pela fila |
+
+---
+
+## Parte B - Relogio vetorial (secao 6.4)
+
+### 1. Com 10 agencias, o que acontece com o tamanho do vetor anexado a cada mensagem? Isso e um problema?
+
+O vetor tem uma posicao por agencia, entao cresce **linearmente**: com 10 agencias, cada mensagem
+e cada evento do log carregam 10 inteiros em vez de 3. Para 3 ou 10 agencias isso nao e problema -
+sao dezenas de bytes perto do resto da mensagem (`idMensagem`, conta, valor).
+
+O problema aparece em outras duas situacoes:
+
+- **Escala:** com milhares de processos, o vetor passa a ser maior que a propria mensagem, e cada
+  comparacao custa O(N). Isso tambem pesa no `mesclar_logs.py`, que compara vetores par a par.
+- **Numero de participantes fixo:** o vetor pressupoe que todo mundo sabe quantos processos
+  existem. No nosso codigo isso esta em `config.NUMERO_AGENCIAS`, e o schema `MensagemCredito`
+  exige um `vetorEnvio` com exatamente esse tamanho. Colocar uma 4a agencia exige reiniciar todas
+  com a configuracao nova; uma agencia antiga mandando vetor de 3 posicoes teria a mensagem
+  rejeitada.
+
+Solucoes conhecidas para isso: enviar so as posicoes que mudaram, usar *version vectors* por
+item de dado em vez de por processo, ou estruturas que crescem e encolhem com os participantes
+(*interval tree clocks*). Quando so e preciso uma ordem aproximada, relogios hibridos (HLC)
+resolvem com tamanho constante.
+
+### 2. `V1 = [3, 1, 0]` e `V2 = [3, 2, 0]`: qual aconteceu primeiro?
+
+**V1 aconteceu antes de V2.** Comparando posicao a posicao:
+
+| posicao | V1 | V2 | |
+|---|---|---|---|
+| 0 | 3 | 3 | igual |
+| 1 | 1 | 2 | V1 menor |
+| 2 | 0 | 0 | igual |
+
+Todas as posicoes de V1 sao menores ou iguais as de V2 e os vetores sao diferentes. Na pratica,
+e o que se ve quando a agencia 1 registra mais um evento proprio depois de V1: so a posicao dela
+avanca. O caso esta coberto em `tests/test_relogio_vetorial.py`
+(`test_pergunta_2_da_secao_6_4_v1_aconteceu_antes`).
+
+### 3. `V1 = [3, 1, 0]` e `V2 = [1, 3, 0]`: qual aconteceu primeiro?
+
+**Sao concorrentes.** Na posicao 0, V1 e maior (3 > 1); na posicao 1, V2 e maior (3 > 1). Nenhum
+domina o outro: V1 "sabe" de eventos da agencia 0 que V2 nao conhece, e V2 sabe de eventos da
+agencia 1 que V1 nao conhece. Entao nenhum dos dois pode ter influenciado o outro. Coberto por
+`test_pergunta_3_da_secao_6_4_concorrentes`.
+
+---
+
+## Parte C - Publish/Subscribe entre agencias (secao 7.5)
+
+### 1. O que aconteceu quando a Agencia 1 voltou? A mensagem "sumiu" por falha da mensageria?
+
+Sequencia observada (`resiliencia-fila.png`):
+
+1. Com a Agencia 1 derrubada, a transferencia de R$ 10 da conta 0 para a conta 1 respondeu
+   **HTTP 200** ("publicada para a Agencia 1"), e a `fila-agencia-1` ficou com **1 mensagem**.
+2. Ao subir de novo, a Agencia 1 conectou, assinou a fila e consumiu a mensagem na hora:
+
+   ```
+   [Agencia 1] consumindo a fila fila-agencia-1
+   [Vetor [3, 1, 0]] CREDITO_REMOTO_FALHOU {... 'idConta': 1, 'valor': 10.0,
+                     'vetorRecebido': [3, 0, 0], 'motivo': 'conta nao encontrada'}
+   ```
+3. A fila voltou a 0 mensagens e `GET /contas/1` respondeu **404**.
+
+**A mensageria nao falhou:** a mensagem ficou retida enquanto nao havia consumidor, foi entregue
+assim que a agencia voltou, e o vetor mostra a regra 3 funcionando (`[3,0,0]` recebido, `[3,1,0]`
+resultante). O credito nao foi aplicado porque a **conta nao existia mais**: as contas vivem na
+memoria do processo, e o processo novo da Agencia 1 comecou vazio. A mensagem chegou, mas nao
+encontrou onde aplicar o valor.
+
+Com a funcionalidade adicional (dead-letter), esse credito nao e mais descartado: depois de duas
+tentativas ele vai para a `fila-mortas` e pode ser reprocessado quando a conta for recriada.
+
+### 2. O que melhorou em relacao ao Sprint 1 e o que continua em aberto?
+
+**O que melhorou:**
+
+- **Desacoplamento no tempo.** No Sprint 1, com a agencia de destino fora do ar, a chamada REST
+  falhava na hora (502) e o debito ficava aplicado sem credito (`TRANSFERENCIA_FALHOU`). Agora a
+  origem so precisa que o *broker* esteja no ar: a mensagem e duravel (`durable` na fila e
+  `persistent` na mensagem) e espera o destino voltar.
+- **Falha local detectavel.** Com *publisher confirms* e `mandatory`, a origem sabe se o broker
+  aceitou a mensagem. Se nao aceitou, a falha e local e sincrona, e o debito e **estornado**
+  (`TRANSFERENCIA_ESTORNADA`, HTTP 503) - coisa que no Sprint 1 nao dava para fazer com seguranca.
+
+**O que continua em aberto** - "a mensagem nao se perde" nao e o mesmo que "o sistema esta
+correto":
+
+- **O dinheiro ainda pode sumir.** No teste de resiliencia, a Ana foi debitada em R$ 10 e ninguem
+  foi creditado: a soma dos saldos do banco diminuiu. A mensagem estava intacta; o estado da
+  agencia e que nao. Isso so se resolve com persistencia das contas e com uma transacao
+  distribuida (2PC ou Saga, Sprint 4) que desfaca o debito quando o credito nao for possivel.
+- **O 200 mudou de sentido.** Agora ele significa "publicada", nao "creditada". A origem nao fica
+  sabendo se o credito foi aplicado; nao ha confirmacao de volta nem compensacao automatica.
+- **Entrega pelo menos uma vez.** O ack e enviado depois de aplicar o credito. Se a agencia cair
+  entre aplicar e confirmar, o RabbitMQ reentrega e o credito seria aplicado duas vezes. A
+  mensagem ja carrega um `idMensagem` unico, que e o que permitiria um consumidor idempotente.
+- **Caso ambiguo na publicacao.** Se a confirmacao do broker nao chegar a tempo (timeout), o
+  codigo estorna, mas a mensagem pode ter sido gravada mesmo assim.
+
+### 3. O consumidor processa creditos sem verificar JWT. Isso e um problema de seguranca?
+
+**Sim, em principio.** A fronteira de confianca mudou de lugar. No Sprint 1, a rota
+`/contas/{id}/creditar-remoto` so aceitava um JWT de servico (`tipo: servico`); quem nao tivesse a
+chave nao conseguia creditar conta nenhuma. Com a mensageria essa rota deixou de existir, e o
+consumidor aplica **qualquer** mensagem que chegue na fila da agencia.
+
+Hoje, quem consegue publicar na exchange e quem tem a URL AMQP da instancia - usuario e senha do
+vhost do CloudAMQP. No meu ambiente de desenvolvimento, isso e so eu: a URL fica em `agencia/.env`,
+que esta fora do Git. Mas as 3 agencias usam o **mesmo** usuario, com permissao total no vhost.
+Quem obtiver essa URL publica `agencia.1.creditar` com qualquer valor e credita qualquer conta, sem
+passar por login nem por autorizacao de dono da conta. A validacao do schema `MensagemCredito`
+barra mensagens malformadas, mas nao mensagens forjadas.
+
+O que eu faria num sistema real:
+
+- **Um usuario do broker por agencia, com permissoes restritas:** cada agencia so le a propria fila
+  e so escreve em `iceibank.eventos`. Isso limita o estrago se uma credencial vazar.
+- **Assinar a mensagem** (HMAC ou JWT de servico) e verificar no consumidor. Um detalhe observado
+  aqui: o token de servico do Sprint 1 expirava em 30 s, e isso nao serve para mensageria, porque
+  uma mensagem pode ficar horas na fila enquanto a agencia esta fora do ar. A validade precisa ser
+  longa, e o `idMensagem` passa a ser necessario para impedir que a mesma mensagem assinada seja
+  reenviada (replay).
+- Manter TLS na conexao, o que ja acontece hoje (`amqps://`).
+
+---
+
+## Parte D - Linha do tempo causal (secao 8.3)
+
+### 1. O que, no relogio vetorial, torna possivel a comparacao confiavel?
+
+O vetor guarda **um contador por agencia**: a posicao `i` diz quantos eventos da agencia `i` o
+evento "conhece", seja porque aconteceram antes dele na mesma agencia, seja porque chegaram por
+mensagem. Por isso a comparacao vale nos **dois sentidos**:
+
+- a aconteceu-antes de b **se e somente se** V(a) <= V(b) posicao a posicao (e V(a) != V(b));
+- se nenhum domina o outro, os eventos sao comprovadamente concorrentes.
+
+O Lamport so garante a ida (a -> b implica L(a) < L(b)). Ele resume tudo num numero e perde a
+informacao de **qual** agencia contribuiu para aquele valor, entao dois numeros diferentes nao
+dizem se houve relacao causal.
+
+### 2. Um par classificado como concorrente no meu teste faz sentido?
+
+Do `linha-do-tempo-causal.png`:
+
+```
+agencia-2 CRIAR_CONTA [0,0,1]  x  agencia-0 TRANSFERENCIA_ENVIADA [3,0,0]
+```
+
+Faz sentido. A Carla criou a conta 2 na Agencia 2 enquanto a Ana transferia para o Bruno a partir
+da Agencia 0. Nessa execucao nenhuma mensagem trafegou entre a Agencia 0 e a Agencia 2. O vetor da
+Agencia 2 tem 0 na posicao da Agencia 0 (ela nao sabia de nada que a Agencia 0 fez), e o vetor da
+Agencia 0 tem 0 na posicao da Agencia 2. Nenhum dos eventos poderia ter influenciado o outro.
+
+A mesma saida mostra o contraste: `agencia-0 TRANSFERENCIA_ENVIADA [3,0,0]` aparece como
+**aconteceu-ANTES** de `agencia-1 TRANSFERENCIA_CREDITO_REMOTO [3,2,0]`, e o script confere que esse
+par **nao** esta entre os 13 concorrentes. O credito so existiu porque a mensagem foi enviada.
+
+A listagem por hora de parede colocou a criacao da conta da Carla em primeiro lugar, mas isso so
+reflete qual requisicao chegou primeiro no relogio da maquina, nao uma relacao de causa.
+
+### 3. O algoritmo O(n^2) seria um problema com milhoes de eventos? Como escalar?
+
+Seria inviavel: um milhao de eventos da cerca de 5 x 10^11 pares, cada um com uma comparacao de
+vetor. E a propria saida nao serviria para nada, porque a maioria dos pares entre agencias
+diferentes seria concorrente.
+
+Formas de tornar a analise escalavel:
+
+- **Usar a estrutura do problema.** Os eventos de uma mesma agencia ja estao totalmente ordenados
+  e os vetores so crescem. Para um evento `e` da agencia A, os eventos da agencia B concorrentes a
+  ele formam um **intervalo** contiguo: comecam depois do evento de numero `V(e)[B]` e terminam
+  antes do primeiro evento de B que ja conhece `e`. Esse limite sai por busca binaria. O custo cai
+  para O(n log n) por par de agencias, e o resultado e representado como intervalos, nao como
+  milhoes de pares.
+- **Restringir a pergunta.** Em geral so interessam concorrencias que podem dar conflito, por
+  exemplo operacoes sobre a **mesma conta**. Agrupar por conta antes de comparar reduz muito o n.
+- **Janela de tempo e processamento incremental.** Analisar em fluxo, comparando cada evento novo
+  so com os de uma janela recente, em vez de reprocessar o historico inteiro.
+
+---
+
+## Funcionalidade adicional - dead-letter queue (secao 2.1)
+
+### O que ela faz
+
+Mensagens de credito que nao podem ser processadas deixam de ser descartadas e vao para uma fila
+separada, a `fila-mortas`, de onde podem ser inspecionadas e reprocessadas.
+
+- **Topologia:** exchange `iceibank.mortas` (fanout, duravel) ligada a `fila-mortas` (duravel). As
+  filas das agencias sao declaradas com o argumento `x-dead-letter-exchange: iceibank.mortas`.
+- **Politica de nova tentativa** (`services/mensageria.py`): se o processamento falha na primeira
+  entrega, a mensagem volta para a fila (`reject(requeue=True)`). Se falha de novo (mensagem
+  marcada como `redelivered`), o consumidor a rejeita sem reenfileirar e o **proprio RabbitMQ** a
+  move para a `fila-mortas`, com o cabecalho `x-death` dizendo de qual fila veio e por que.
+- **O que conta como falha:** conta de destino inexistente (o cenario do teste de resiliencia) e
+  mensagem malformada. O controller levanta `CreditoNaoAplicado` e registra
+  `CREDITO_REMOTO_FALHOU` com `tentativa` e `destino`.
+- **Ferramenta de operacao:** `python mensagens_mortas.py` lista a fila-mortas sem remover nada;
+  `python mensagens_mortas.py --reprocessar` republica cada mensagem na routing key original.
+- **Migracao:** filas criadas antes desta funcionalidade nao tem o argumento, e o RabbitMQ nao
+  deixa alterar argumentos de uma fila existente. Ao subir, a agencia recria essas filas
+  automaticamente, **somente se estiverem vazias**, para nao perder credito.
+
+### Por que escolhi implementa-la
+
+Ela ataca diretamente o problema que o teste de resiliencia expos. Sem ela, o credito para a conta
+perdida era registrado como falha e a mensagem era confirmada (ack): o valor saia da conta da Ana e
+desaparecia. Com ela, o credito fica guardado e recuperavel, e o sistema passa a distinguir falha
+temporaria (vale tentar de novo) de falha que precisa de intervencao.
+
+### Evidencia
+
+`evidencias/sprint2/funcionalidade-adicional.png`: transferencia de R$ 30 para a conta 1
+inexistente -> duas tentativas no log da Agencia 1 -> mensagem na `fila-mortas` com motivo
+`rejected` -> conta 1 recriada e mensagem reprocessada -> saldo da conta 1 passa de 50 para
+**80** e a fila-mortas volta a 0. O vetor do credito final (`[3, 4, 0]`) mostra que o
+reprocessamento preservou a causalidade original: o `vetorEnvio` continua sendo `[3, 0, 0]`.
+
+---
+
+## Decisoes de design do Sprint 2
+
+### Cliente RabbitMQ: aio-pika em vez de pika
+
+O roteiro sugere o `pika`, mas ele e bloqueante: em FastAPI, o consumidor teria de rodar numa
+thread separada. Ai `contas` e o relogio passariam a ser acessados por duas threads, o
+`asyncio.Lock` do relogio nao protegeria entre elas, e a garantia do Sprint 1 (sem `await` entre a
+checagem de saldo e o debito, o trecho e atomico no event loop) deixaria de valer. Com o
+`aio-pika`, o consumidor e iniciado no `lifespan` do FastAPI e roda no **mesmo event loop** do
+uvicorn, entao o modelo de concorrencia continua o mesmo. O `connect_robust` tambem reconecta
+sozinho se o broker cair, o que foi observado nos testes.
+
+### Toda agencia declara a topologia inteira
+
+Se cada agencia declarasse so a propria fila, uma agencia que nunca subiu naquele broker nao teria
+fila, e o RabbitMQ descartaria em silencio uma mensagem com a routing key dela. Por isso cada
+agencia declara a exchange, as 3 filas e os bindings (a declaracao e idempotente), e a publicacao
+usa `mandatory=True` com *publisher confirms*, para que uma falha de roteamento vire excecao.
+
+### Debito antes de qualquer `await`
+
+Com o consumidor dividindo o event loop com as requisicoes HTTP, passou a importar ainda mais que
+nao haja ponto de suspensao entre a checagem de saldo e o debito. Nas transferencias e no saque, o
+debito agora e aplicado **antes** de `await relogio.evento_local()`.
+
+### `idMensagem` e evento `TRANSFERENCIA_ENVIADA`
+
+Cada transferencia entre agencias gera um UUID que vai na mensagem e no log das duas pontas. E ele
+que permite ao `mesclar_logs.py` casar envio e recebimento (e provar o par causal), a
+`fila-mortas` identificar o credito, e, no futuro, deduplicar reentregas.
+
+### Token de servico removido
+
+A rota `creditar-remoto` e o token de servico do Sprint 1 viraram codigo morto e foram removidos.
+O que substitui essa protecao e discutido na pergunta 3 da Parte C.
+
+### Credenciais do broker fora do Git
+
+A `RABBITMQ_URL` carrega usuario e senha, e o repositorio e publico. Ela e lida de
+`agencia/.env` (python-dotenv), que esta no `.gitignore`; o repositorio traz so um
+`agencia/.env.example`.
+
+### Instancia CloudAMQP
+
+O plano gratis que o CloudAMQP oferece por padrao hoje ("Loyal Lemming") e LavinMQ, nao RabbitMQ.
+Usei o **Little Lemur**, que e RabbitMQ, para seguir o roteiro.
+
+---
+
+## Regressao do Sprint 1 (verificada, nao presumida)
+
+Com as agencias rodando contra o CloudAMQP, em 29/09/2026:
+
+| Verificacao | Resultado |
+|---|---|
+| Login pelo frontend (bruno na Agencia 1, ana na Agencia 0) | ok |
+| Criar conta pelo frontend | "Conta 1 criada na Agencia 1" / "Conta 0 criada na Agencia 0" |
+| Transferencia 0 -> 1 pelo frontend | "publicada para a Agencia 1; o credito sera aplicado de forma assincrona", vetor `[3, 0, 0]` |
+| Saldo da conta 1 depois da transferencia | 80 (50 + 30), credito aplicado pela fila |
+| `GET /contas/0` sem token | 401 |
+| `GET /contas/0` com token invalido | 401 |
+| bruno consultando a conta 0 (da ana) | 403 (autorizacao por dono da conta continua valendo) |
+| `POST /contas/1/creditar-remoto` (rota do Sprint 1) | 404 (removida, como pede o roteiro) |
+| Testes do relogio vetorial (`python -m pytest tests/`) | 14 passaram |
+
+---
+
+## Declaracao de uso de IA
+
+<!-- REVISE ESTE TEXTO ANTES DE ENTREGAR: ele precisa descrever o seu uso real. -->
+
+Usei o Claude (Anthropic) como assistente neste sprint: para discutir a arquitetura (escolha do
+aio-pika, topologia de filas, dead-letter), gerar e revisar o codigo, escrever os testes e o script
+de captura de evidencias, e redigir a primeira versao destas respostas. Executei todos os cenarios
+na minha maquina contra a minha instancia do CloudAMQP, conferi os resultados nos prints e sou
+capaz de explicar e defender cada trecho entregue.
+
+---
+
+# Sprint 1 - API REST/MVC e relogio de Lamport
 
 ## Parte B - Relogio de Lamport e registro de eventos (secao 6.4)
 
