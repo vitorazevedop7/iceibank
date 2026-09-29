@@ -83,8 +83,9 @@ async def sacar(id_conta: int, dados: ValorRequest, estado, usuario: dict) -> di
             },
         )
 
-    ts = await estado.relogio.evento_local()
+    # Debito antes do await: nenhum ponto de suspensao entre checagem e debito.
     conta.saldo -= dados.valor
+    ts = await estado.relogio.evento_local()
     estado.registro.registrar(
         "SAQUE", ts, {"id": id_conta, "valor": dados.valor, "novoSaldo": conta.saldo}
     )

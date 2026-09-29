@@ -99,15 +99,23 @@ export function useBanco(agencia: number, aoFalhar: (erro: unknown) => void) {
                 `Nada foi debitado de novo. Saldo da origem: R$ ${r.saldoOrigem.toFixed(2)}`,
             }
           }
-          const onde =
-            r.escopo === 'local'
-              ? 'dentro da mesma agencia'
-              : `entre agencias (destino: Agencia ${r.agenciaDestino})`
+          const vetor = `Vetor [${r.timestampVetorial.join(', ')}]`
+          const saldo = `Saldo da origem: R$ ${r.saldoOrigem.toFixed(2)}`
+          if (r.escopo === 'local') {
+            return {
+              tipo: 'sucesso',
+              texto:
+                `Transferencia de R$ ${valor.toFixed(2)} concluida dentro da mesma agencia. ` +
+                `${saldo} | ${vetor}`,
+            }
+          }
+          // Sprint 2: entre agencias, a resposta so confirma a PUBLICACAO no RabbitMQ.
+          // O credito e aplicado depois, quando a agencia de destino consumir a mensagem.
           return {
             tipo: 'sucesso',
             texto:
-              `Transferencia de R$ ${valor.toFixed(2)} concluida ${onde}. ` +
-              `Saldo da origem: R$ ${r.saldoOrigem.toFixed(2)} | Vetor [${r.timestampVetorial.join(', ')}]`,
+              `Transferencia de R$ ${valor.toFixed(2)} publicada para a Agencia ${r.agenciaDestino}; ` +
+              `o credito sera aplicado de forma assincrona. ${saldo} | ${vetor}`,
           }
         },
       ),

@@ -40,21 +40,6 @@ def usuario_autenticado(
     return payload
 
 
-def servico_autenticado(
-    credenciais: HTTPAuthorizationCredentials | None = Depends(_esquema_bearer),
-) -> dict:
-    """Exige um token de servico valido. Usada apenas na rota creditar-remoto.
-
-    A rota interna e protegida, mas por uma credencial diferente: quem chama nao e
-    uma pessoa, e outra agencia. Tratar a rede interna como confiavel seria abrir um
-    caminho sem autenticacao para creditar qualquer conta.
-    """
-    payload = _payload_valido(credenciais)
-    if payload.get("tipo") != "servico":
-        raise _nao_autorizado("Esta rota so aceita token de servico entre agencias.")
-    return payload
-
-
 def exigir_dono_da_conta(payload: dict, id_conta: int) -> None:
     """Autorizacao: o usuario autenticado e dono da conta que quer operar?
 

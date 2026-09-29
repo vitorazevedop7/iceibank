@@ -1,12 +1,12 @@
 """Emissao e validacao dos tokens JWT usados pelo ICEIBank.
 
-Existem dois tipos de token, distinguidos pela claim `tipo`:
+O token de usuario e emitido no login e representa uma pessoa dona de contas.
+Carrega a claim `contas` com os ids que ela pode operar, o que permite verificar
+autorizacao sem consultar nenhuma base a cada requisicao.
 
-- `usuario`  : emitido no login, representa uma pessoa dona de contas. Carrega a
-               claim `contas` com os ids que ela pode operar, o que permite
-               verificar autorizacao sem consultar nenhuma base a cada requisicao.
-- `servico`  : emitido por uma agencia para chamar outra agencia (creditar-remoto).
-               Nao pertence a nenhuma pessoa e vive apenas alguns segundos.
+No Sprint 1 existia tambem um token de servico, usado por uma agencia para chamar
+a rota interna creditar-remoto de outra. Com a mensageria do Sprint 2 essa rota
+deixou de existir, e o token de servico saiu junto.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -32,19 +32,6 @@ def criar_token_usuario(usuario: str, contas: list[int]) -> tuple[str, int]:
     }
     token = jwt.encode(payload, config.JWT_SEGREDO, algorithm=config.JWT_ALGORITMO)
     return token, int(expiracao.total_seconds())
-
-
-def criar_token_servico(id_agencia: int) -> str:
-    """Token que uma agencia usa para se identificar perante outra agencia."""
-    payload = {
-        "sub": f"agencia-{id_agencia}",
-        "tipo": "servico",
-        "agencia": id_agencia,
-        "iat": _agora(),
-        "exp": _agora()
-        + timedelta(seconds=config.EXPIRACAO_TOKEN_SERVICO_SEGUNDOS),
-    }
-    return jwt.encode(payload, config.JWT_SEGREDO, algorithm=config.JWT_ALGORITMO)
 
 
 def decodificar_token(token: str) -> dict:

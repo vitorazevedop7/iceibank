@@ -7,24 +7,44 @@ depende a ideia de particao.
 
 import os
 import sys
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from src import config
+from src.controllers import transferencias_controller
 from src.routes import router
-from src.services import RegistroEventos, RelogioVetorial
+from src.services import Mensageria, RegistroEventos, RelogioVetorial
 
 
 def criar_app(id_agencia: int) -> FastAPI:
+    @asynccontextmanager
+    async def ciclo_de_vida(app: FastAPI):
+        # Conecta ao RabbitMQ, declara a topologia e comeca a consumir a fila desta
+        # agencia antes de aceitar a primeira requisicao HTTP. O consumidor roda no
+        # mesmo event loop do uvicorn.
+        mensageria = Mensageria(config.RABBITMQ_URL, config.NUMERO_AGENCIAS)
+        await mensageria.conectar()
+        app.state.mensageria = mensageria
+
+        async def tratar_credito(corpo: dict) -> None:
+            await transferencias_controller.processar_credito_remoto(corpo, app.state)
+
+        await mensageria.consumir(id_agencia, tratar_credito)
+        print(f"[Agencia {id_agencia}] consumindo a fila fila-agencia-{id_agencia}", flush=True)
+        yield
+        await mensageria.fechar()
+
     app = FastAPI(
         title=f"ICEIBank - Agencia {id_agencia}",
         description=(
-            "Sprint 2: API REST/MVC com relogio vetorial, "
+            "Sprint 2: API REST/MVC com relogio vetorial, mensageria via RabbitMQ, "
             "particionamento de contas e autenticacao JWT."
         ),
         version="2.0.0",
+        lifespan=ciclo_de_vida,
     )
 
     # O frontend (Vite) roda em outra origem e precisa falar com as 3 agencias.
@@ -50,6 +70,14 @@ def criar_app(id_agencia: int) -> FastAPI:
 
     return app
 
+
+if not config.RABBITMQ_URL:
+    print(
+        "Defina RABBITMQ_URL (no arquivo agencia/.env ou no terminal) com a URL AMQP "
+        "do seu broker antes de iniciar. Ex.: amqps://usuario:senha@host/vhost",
+        file=sys.stderr,
+    )
+    sys.exit(1)
 
 _id_agencia = int(os.getenv("AGENCIA_ID", "0"))
 if not any(a["id"] == _id_agencia for a in config.AGENCIAS):

@@ -3,9 +3,9 @@
 from src.models.conta import Conta
 from src.models.schemas import (
     ContaResponse,
-    CreditoRemotoRequest,
     CriarContaRequest,
     LoginRequest,
+    MensagemCredito,
     TokenResponse,
     TransferenciaRequest,
     ValorRequest,
@@ -14,9 +14,9 @@ from src.models.schemas import (
 __all__ = [
     "Conta",
     "ContaResponse",
-    "CreditoRemotoRequest",
     "CriarContaRequest",
     "LoginRequest",
+    "MensagemCredito",
     "TokenResponse",
     "TransferenciaRequest",
     "ValorRequest",

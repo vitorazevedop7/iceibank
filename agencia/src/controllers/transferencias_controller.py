@@ -1,18 +1,23 @@
 """Parte D - controller de transferencias (local e entre agencias).
 
-Inclui a funcionalidade adicional do sprint: idempotencia via cabecalho
+Sprint 2: a transferencia entre agencias deixou de ser uma chamada REST direta.
+A agencia de origem publica uma mensagem no RabbitMQ e a agencia de destino a
+consome de forma assincrona (`processar_credito_remoto`).
+
+Mantem a funcionalidade adicional do Sprint 1: idempotencia via cabecalho
 `Idempotency-Key`, para que o reenvio de uma mesma transferencia nao aplique o
 debito duas vezes.
 """
 
-import httpx
+import uuid
+
 from fastapi import HTTPException, status
+from pydantic import ValidationError
 
 from src import config
-from src.auth import criar_token_servico, exigir_dono_da_conta
-from src.models import CreditoRemotoRequest, TransferenciaRequest
-
-_TEMPO_LIMITE = httpx.Timeout(5.0)
+from src.auth import exigir_dono_da_conta
+from src.models import MensagemCredito, TransferenciaRequest
+from src.services.mensageria import routing_key_credito
 
 # Marcador de operacao ainda em andamento no cache de idempotencia.
 _EM_ANDAMENTO = object()
@@ -94,16 +99,19 @@ async def _executar_transferencia(dados: TransferenciaRequest, estado) -> dict:
                 },
             )
 
-        ts_debito = await estado.relogio.evento_local()
+        # O debito vem ANTES de qualquer await: entre a checagem de saldo e o
+        # debito nao pode haver ponto de suspensao, senao outra requisicao (ou o
+        # consumidor de mensagens) poderia intercalar e gastar o mesmo saldo.
         conta_origem.saldo -= dados.valor
+        ts_debito = await estado.relogio.evento_local()
         estado.registro.registrar(
             "TRANSFERENCIA_DEBITO",
             ts_debito,
             {"idOrigem": dados.idOrigem, "idDestino": dados.idDestino, "valor": dados.valor},
         )
 
-        ts_credito = await estado.relogio.evento_local()
         conta_destino.saldo += dados.valor
+        ts_credito = await estado.relogio.evento_local()
         estado.registro.registrar(
             "TRANSFERENCIA_CREDITO",
             ts_credito,
@@ -118,8 +126,8 @@ async def _executar_transferencia(dados: TransferenciaRequest, estado) -> dict:
 
     # --- Caso 2: entre agencias -------------------------------------------
     # O debito e sempre local, pois esta agencia e a dona da conta de origem.
-    ts_debito = await estado.relogio.evento_local()
     conta_origem.saldo -= dados.valor
+    ts_debito = await estado.relogio.evento_local()
     estado.registro.registrar(
         "TRANSFERENCIA_DEBITO",
         ts_debito,
@@ -131,94 +139,119 @@ async def _executar_transferencia(dados: TransferenciaRequest, estado) -> dict:
         },
     )
 
-    # Regra 2 do relogio vetorial: incrementa a propria posicao e anexa o vetor
-    # inteiro a mensagem enviada.
+    # Em vez de chamar a outra agencia (Sprint 1), publicamos um evento no
+    # RabbitMQ. Regra 2 do relogio vetorial: incrementa a propria posicao e anexa
+    # o vetor inteiro a mensagem.
+    id_mensagem = str(uuid.uuid4())
     ts_envio = await estado.relogio.ao_enviar()
-    url_destino = config.url_da_agencia(agencia_destino)
+    mensagem = {
+        "idMensagem": id_mensagem,
+        "idOrigem": dados.idOrigem,
+        "idConta": dados.idDestino,
+        "valor": dados.valor,
+        "vetorEnvio": ts_envio,
+        "origemAgencia": estado.id_agencia,
+    }
+
+    # O envio e registrado antes da publicacao: o evento de envio (regra 2) ja
+    # aconteceu no relogio. Se a publicacao falhar, o estorno vem logo depois.
+    estado.registro.registrar(
+        "TRANSFERENCIA_ENVIADA",
+        ts_envio,
+        {
+            "idMensagem": id_mensagem,
+            "idOrigem": dados.idOrigem,
+            "idDestino": dados.idDestino,
+            "valor": dados.valor,
+            "agenciaDestino": agencia_destino,
+        },
+    )
 
     try:
-        async with httpx.AsyncClient(timeout=_TEMPO_LIMITE) as cliente:
-            resposta = await cliente.post(
-                f"{url_destino}/contas/{dados.idDestino}/creditar-remoto",
-                json={
-                    "valor": dados.valor,
-                    "timestampVetorial": ts_envio,
-                    "origemAgencia": estado.id_agencia,
-                },
-                headers={
-                    # Token de servico: quem chama e outra agencia, nao uma pessoa.
-                    "Authorization": f"Bearer {criar_token_servico(estado.id_agencia)}"
-                },
-            )
-            resposta.raise_for_status()
+        await estado.mensageria.publicar(
+            routing_key_credito(agencia_destino), mensagem, id_mensagem
+        )
     except Exception as erro:
-        # LIMITACAO CONHECIDA DESTE SPRINT: o debito aplicado acima NAO e revertido.
-        # O dinheiro "desaparece" temporariamente. Garantir atomicidade sob falha e
-        # o assunto do Sprint 4 (2PC ou Saga). Por enquanto apenas registramos a
-        # inconsistencia no log, em vez de esconde-la.
-        ts_falha = await estado.relogio.evento_local()
+        # Diferente do Sprint 1, aqui a falha e local e sincrona: o broker recusou
+        # ou nao confirmou a publicacao, entao o credito nao vai acontecer e da
+        # para estornar o debito na hora. (Caso ambiguo: se a confirmacao so
+        # atrasou, a mensagem pode ter chegado ao broker mesmo assim - garantir
+        # atomicidade nesse caso e assunto do Sprint 4.)
+        conta_origem.saldo += dados.valor
+        ts_estorno = await estado.relogio.evento_local()
         estado.registro.registrar(
-            "TRANSFERENCIA_FALHOU",
-            ts_falha,
+            "TRANSFERENCIA_ESTORNADA",
+            ts_estorno,
             {
+                "idMensagem": id_mensagem,
                 "idOrigem": dados.idOrigem,
                 "idDestino": dados.idDestino,
                 "valor": dados.valor,
                 "agenciaDestino": agencia_destino,
                 "erro": f"{type(erro).__name__}: {erro}",
-                "inconsistencia": "debito aplicado sem credito correspondente",
             },
         )
         raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail={
-                "erro": "Falha ao contatar a agencia de destino. Debito ja aplicado - "
-                "inconsistencia conhecida deste sprint (ver Sprint 4).",
+                "erro": "Nao foi possivel publicar a transferencia no RabbitMQ. "
+                "O debito foi estornado; tente novamente.",
                 "saldoOrigem": conta_origem.saldo,
-                "valorEmTransito": dados.valor,
             },
         )
 
+    # 200 aqui significa "publicada e confirmada pelo broker", NAO "creditada":
+    # o credito acontece depois, quando a agencia de destino consumir a mensagem.
     return {
-        "mensagem": "Transferencia concluida (entre agencias).",
+        "mensagem": f"Transferencia publicada para a Agencia {agencia_destino}; "
+        "o credito sera aplicado de forma assincrona.",
         "escopo": "entre-agencias",
         "agenciaDestino": agencia_destino,
         "saldoOrigem": conta_origem.saldo,
         "timestampVetorial": ts_envio,
+        "idMensagem": id_mensagem,
     }
 
 
-async def creditar_remoto(
-    id_conta: int, dados: CreditoRemotoRequest, estado, servico: dict
-) -> dict:
-    """Recebe o credito enviado por outra agencia.
+async def processar_credito_remoto(corpo: dict, estado) -> None:
+    """Consumidor: aplica um credito publicado por outra agencia.
 
-    Regra 3 do relogio vetorial: o vetor local vira o maximo posicao a posicao entre
-    ele e o vetor recebido, e depois a propria posicao e incrementada.
+    Faz o papel que no Sprint 1 era da rota creditar-remoto, mas e chamado pelo
+    consumidor do RabbitMQ (services/mensageria.py), nao pelo Express/FastAPI -
+    por isso nao passa por nenhuma verificacao de JWT.
+
+    Regra 3 do relogio vetorial: o vetor local vira o maximo posicao a posicao
+    entre ele e o vetor recebido, e depois a propria posicao e incrementada.
     """
-    ts = await estado.relogio.ao_receber(dados.timestampVetorial)
+    try:
+        mensagem = MensagemCredito.model_validate(corpo)
+    except ValidationError as erro:
+        # Mensagem malformada: nao ha vetor confiavel para sincronizar o relogio.
+        print(f"[Mensageria] mensagem de credito invalida descartada: {erro}", flush=True)
+        return
 
-    conta = estado.contas.get(id_conta)
-    if conta is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"erro": f"Conta {id_conta} nao encontrada nesta agencia."},
-        )
+    ts = await estado.relogio.ao_receber(mensagem.vetorEnvio)
 
-    conta.saldo += dados.valor
-    estado.registro.registrar(
-        "TRANSFERENCIA_CREDITO_REMOTO",
-        ts,
-        {
-            "idConta": id_conta,
-            "valor": dados.valor,
-            "origemAgencia": dados.origemAgencia,
-            "timestampRecebido": dados.timestampVetorial,
-            "chamadaPor": servico.get("sub"),
-        },
-    )
-    return {
-        "mensagem": "Credito remoto aplicado.",
-        "saldoAtual": conta.saldo,
-        "timestampVetorial": ts,
+    detalhes = {
+        "idMensagem": mensagem.idMensagem,
+        "idOrigem": mensagem.idOrigem,
+        "idConta": mensagem.idConta,
+        "valor": mensagem.valor,
+        "origemAgencia": mensagem.origemAgencia,
+        "vetorRecebido": mensagem.vetorEnvio,
     }
+
+    conta = estado.contas.get(mensagem.idConta)
+    if conta is None:
+        # A mensagem chegou, mas a conta nao existe (ex.: a agencia reiniciou e
+        # perdeu as contas, que vivem so em memoria). A mensageria nao perdeu
+        # nada - quem falhou foi o estado da agencia.
+        estado.registro.registrar(
+            "CREDITO_REMOTO_FALHOU", ts, {**detalhes, "motivo": "conta nao encontrada"}
+        )
+        return
+
+    conta.saldo += mensagem.valor
+    estado.registro.registrar(
+        "TRANSFERENCIA_CREDITO_REMOTO", ts, {**detalhes, "novoSaldo": conta.saldo}
+    )

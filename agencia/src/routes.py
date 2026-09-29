@@ -6,11 +6,10 @@ validacao de schema e dependencia de autenticacao ao controller correspondente.
 
 from fastapi import APIRouter, Depends, Header, Request
 
-from src.auth import servico_autenticado, usuario_autenticado
+from src.auth import usuario_autenticado
 from src.controllers import auth_controller, contas_controller
 from src.controllers import transferencias_controller as transferencias
 from src.models import (
-    CreditoRemotoRequest,
     CriarContaRequest,
     LoginRequest,
     TokenResponse,
@@ -73,6 +72,9 @@ async def rota_sacar(
 
 
 # --- Parte D: transferencias -----------------------------------------------
+#
+# Sprint 2: a rota interna /contas/{id}/creditar-remoto deixou de existir. O
+# credito vindo de outra agencia chega pelo RabbitMQ (ver services/mensageria.py).
 
 
 @router.post("/transferencias", tags=["transferencias"])
@@ -84,19 +86,6 @@ async def rota_transferir(
 ):
     return await transferencias.transferir(
         dados, _estado(request), usuario, idempotency_key
-    )
-
-
-@router.post("/contas/{id_conta}/creditar-remoto", tags=["transferencias"])
-async def rota_creditar_remoto(
-    id_conta: int,
-    dados: CreditoRemotoRequest,
-    request: Request,
-    servico: dict = Depends(servico_autenticado),
-):
-    """Rota interna: so aceita token de servico emitido por outra agencia."""
-    return await transferencias.creditar_remoto(
-        id_conta, dados, _estado(request), servico
     )
 
 

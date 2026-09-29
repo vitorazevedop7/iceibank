@@ -2,6 +2,13 @@
 
 import hashlib
 import os
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+# Le agencia/.env, se existir (fora do Git: guarda a URL do RabbitMQ, que carrega
+# usuario e senha). Variaveis ja definidas no terminal tem prioridade.
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 # OFFSET pessoal (dois ultimos digitos da matricula), necessario apenas em maquina
 # compartilhada de laboratorio. Pode ser sobrescrito por variavel de ambiente.
@@ -43,9 +50,10 @@ JWT_ALGORITMO = "HS256"
 # Expiracao curta: o token nao pode ser eterno (requisito 2 da Parte F).
 EXPIRACAO_TOKEN_MINUTOS = int(os.getenv("EXPIRACAO_TOKEN_MINUTOS", "15"))
 
-# Expiracao bem curta para o token de servico entre agencias: ele existe apenas
-# pela duracao de uma unica chamada creditar-remoto.
-EXPIRACAO_TOKEN_SERVICO_SEGUNDOS = 30
+# --- Sprint 2: mensageria ----------------------------------------------------
+
+# URL AMQP do broker (CloudAMQP ou RabbitMQ local, ex.: amqp://localhost).
+RABBITMQ_URL = os.getenv("RABBITMQ_URL")
 
 
 def _hash(senha: str) -> str:

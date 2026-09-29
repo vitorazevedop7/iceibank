@@ -18,6 +18,7 @@ export interface ResultadoTransferencia {
   agenciaDestino?: number
   saldoOrigem: number
   timestampVetorial: number[]
+  idMensagem?: string
   repetida?: boolean
 }
 

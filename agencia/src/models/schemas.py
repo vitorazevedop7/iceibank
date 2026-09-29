@@ -21,14 +21,23 @@ class TransferenciaRequest(BaseModel):
     valor: float = Field(gt=0)
 
 
-class CreditoRemotoRequest(BaseModel):
+class MensagemCredito(BaseModel):
+    """Mensagem publicada no RabbitMQ para creditar uma conta de outra agencia.
+
+    Validada ao ser consumida: a mensagem vem de fora do processo, entao nao e
+    confiavel so por ter chegado na fila.
+    """
+
+    idMensagem: str = Field(min_length=1)
+    idOrigem: int = Field(ge=0)
+    idConta: int = Field(ge=0)
     valor: float = Field(gt=0)
-    timestampVetorial: list[int] = Field(
+    vetorEnvio: list[int] = Field(
         min_length=config.NUMERO_AGENCIAS,
         max_length=config.NUMERO_AGENCIAS,
         description="Vetor do relogio da agencia de origem no momento do envio",
     )
-    origemAgencia: int = Field(ge=0)
+    origemAgencia: int = Field(ge=0, lt=config.NUMERO_AGENCIAS)
 
 
 class LoginRequest(BaseModel):
