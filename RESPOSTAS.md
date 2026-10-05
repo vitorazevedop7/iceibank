@@ -321,6 +321,10 @@ de captura de evidencias, e redigir a primeira versao destas respostas. Executei
 na minha maquina contra a minha instancia do CloudAMQP, conferi os resultados nos prints e sou
 capaz de explicar e defender cada trecho entregue.
 
+O video de apresentacao tambem foi feito com o Claude: ele escreveu o roteiro que eu li e gravei,
+executou a demonstracao que aparece na tela (num ambiente na nuvem, com RabbitMQ local em vez do
+CloudAMQP) e fez a edicao, sincronizando a minha narracao com a gravacao da tela.
+
 ---
 
 # Sprint 1 - API REST/MVC e relogio de Lamport
