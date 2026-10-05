@@ -315,9 +315,7 @@ Com as agencias rodando contra o CloudAMQP, em 29/09/2026:
 
 ## Declaracao de uso de IA
 
-<!-- REVISE ESTE TEXTO ANTES DE ENTREGAR: ele precisa descrever o seu uso real. -->
-
-Usei o Claude (Anthropic) como assistente neste sprint: para discutir a arquitetura (escolha do
+Usei o Claude (Anthropic) como assistente neste sprint, no chat e no Claude Code: para discutir a arquitetura (escolha do
 aio-pika, topologia de filas, dead-letter), gerar e revisar o codigo, escrever os testes e o script
 de captura de evidencias, e redigir a primeira versao destas respostas. Executei todos os cenarios
 na minha maquina contra a minha instancia do CloudAMQP, conferi os resultados nos prints e sou
