@@ -20,7 +20,7 @@ Respostas as questoes e decisoes de design de cada sprint: [`RESPOSTAS.md`](RESP
 ## Video de apresentacao (Sprint 2)
 
 <!-- COLE AQUI O LINK DO VIDEO (YouTube nao listado ou Google Drive com acesso liberado) -->
-**Link:** _(a preencher)_
+**Link:** https://drive.google.com/file/d/1o0iDUWmXVWTNY_zbuLkg9JuUGPX5-Kyc/view?usp=sharing
 
 ## Arquitetura (Sprint 2)
 
