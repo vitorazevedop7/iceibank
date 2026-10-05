@@ -17,6 +17,11 @@ Respostas as questoes e decisoes de design de cada sprint: [`RESPOSTAS.md`](RESP
 
 **Link:** https://drive.google.com/file/d/1Dtzv3RyZx0dm33Ogu5a_OrFzn73XzvO4/view?usp=sharing
 
+## Video de apresentacao (Sprint 2)
+
+<!-- COLE AQUI O LINK DO VIDEO (YouTube nao listado ou Google Drive com acesso liberado) -->
+**Link:** _(a preencher)_
+
 ## Arquitetura (Sprint 2)
 
 Uma agencia e um servico REST independente. O mesmo codigo e executado 3 vezes com
